@@ -11,8 +11,8 @@ venv/
 data/
 qdrant_storage/
 
-# --- Personal learning / interview notes (private, not part of the repo) ---
-interview_prep/
+# --- Personal notes (private, not part of the repo) ---
+notes/
 
 # --- IDE / OS ---
 .vscode/
