@@ -1,0 +1,20 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- Secrets: never commit API keys! ---
+.env
+
+# --- Local data & models (regenerated, do not belong in the repo) ---
+data/
+qdrant_storage/
+
+# --- Personal learning / interview notes (private, not part of the repo) ---
+interview_prep/
+
+# --- IDE / OS ---
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,16 @@
+# Runs Qdrant (our vector database) as a Docker container.
+# Start:  docker compose up -d      (in the background)
+# Stop:   docker compose down
+# Web UI: http://localhost:6333/dashboard
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: vibewatch-qdrant
+    ports:
+      - "6333:6333"   # REST API + web dashboard
+      - "6334:6334"   # gRPC (faster connection, optional, used later)
+    volumes:
+      # Persist the vectors on disk so they survive a container restart.
+      - ./qdrant_storage:/qdrant/storage
+    restart: unless-stopped

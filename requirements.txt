@@ -1,0 +1,6 @@
+# Dependencies grouped by project step.
+# We install step by step on purpose -- so the role of each library stays clear.
+
+# --- Step 1: Setup ---
+pydantic-settings   # Load & validate configuration from .env in a type-safe way
+qdrant-client       # Python client for the Qdrant vector database
