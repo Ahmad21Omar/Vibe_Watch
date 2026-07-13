@@ -4,3 +4,6 @@
 # --- Step 1: Setup ---
 pydantic-settings   # Load & validate configuration from .env in a type-safe way
 qdrant-client       # Python client for the Qdrant vector database
+
+# --- Step 2: Data pipeline ---
+httpx               # HTTP client used to call the TMDb API

@@ -58,7 +58,7 @@ The query flow (4 → 5) is orchestrated with **LangGraph** and evaluated with *
 |-----------|-------------|-----|
 | Language / backend | Python, FastAPI | Standard for AI engineering, fast APIs |
 | Data source | TMDb API | Movies & TV shows, multilingual descriptions, free |
-| Embeddings | Gemini `text-embedding-004` | Multilingual, free tier, no local storage cost |
+| Embeddings | Gemini `gemini-embedding-001` | Strong semantic quality, free tier, no local storage cost |
 | Vector DB | Qdrant (Docker) | Fast similarity search + metadata filters |
 | Orchestration | LangGraph | Clear, traceable RAG flow modeled as a graph |
 | Generation | Gemini | Grounded recommendation in natural language |
@@ -71,7 +71,7 @@ The query flow (4 → 5) is orchestrated with **LangGraph** and evaluated with *
 ## 🗺️ Roadmap
 
 - [x] **Step 1 — Setup & foundation:** structure, venv, config, Qdrant, README
-- [ ] **Step 2 — Data pipeline (TMDb):** fetch and normalize movies & TV shows
+- [x] **Step 2 — Data pipeline (TMDb):** fetch and normalize movies & TV shows
 - [ ] **Step 3 — Embeddings & indexing:** vectorize descriptions, store in Qdrant
 - [ ] **Step 4 — Retrieval:** semantic search with metadata filters
 - [ ] **Step 5 — Generation & orchestration:** LangGraph flow + LLM reasoning
@@ -107,11 +107,33 @@ docker compose up -d
 ```
 Vibewatch/
 ├── vibewatch/           # Python package with the actual code
-│   ├── __init__.py
-│   └── config.py        # central, type-safe configuration
+│   ├── config.py        # central, type-safe configuration
+│   ├── models.py        # Title: our unified movie/TV data model
+│   └── tmdb.py          # thin TMDb API client
+├── scripts/
+│   └── fetch_titles.py  # offline ingestion: TMDb -> data/titles.json
 ├── data/                # locally cached TMDb data (git-ignored)
 ├── .env.example         # template for API keys
 ├── requirements.txt     # Python dependencies (grouped by step)
 ├── docker-compose.yml   # Qdrant vector DB
 └── README.md
 ```
+
+---
+
+## 📥 Data pipeline
+
+Ingestion runs **offline**, separated from the live query path — the standard RAG
+architecture (no API limits at query time, reproducible data to embed).
+
+```bash
+python -m scripts.fetch_titles     # ~900 titles -> data/titles.json
+```
+
+It fetches the most popular movies & TV shows from TMDb, unifies the differing
+movie/TV field names into one `Title` model, drops titles without a plot, and
+de-duplicates (popularity shifts during paging can return the same title twice).
+
+**Design note:** we do not embed the plot alone. `Title.embedding_text()` builds
+`type + title + genres + plot`, giving the vector more context for a mood/theme query
+to match against. What you embed decides what you can find.
