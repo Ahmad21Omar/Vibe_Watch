@@ -73,6 +73,7 @@ The query flow (4 → 5) is orchestrated with **LangGraph** and evaluated with *
 - [x] **Step 1 — Setup & foundation:** structure, venv, config, Qdrant, README
 - [x] **Step 2 — Data pipeline (TMDb):** fetch and normalize movies & TV shows
 - [ ] **Step 3 — Embeddings & indexing:** vectorize descriptions, store in Qdrant
+      *(code complete; full index blocked by the embedding free-tier quota — see below)*
 - [ ] **Step 4 — Retrieval:** semantic search with metadata filters
 - [ ] **Step 5 — Generation & orchestration:** LangGraph flow + LLM reasoning
 - [ ] **Step 6 — Frontend & evaluation:** Streamlit UI + RAGAS + Docker deployment
@@ -109,9 +110,12 @@ Vibewatch/
 ├── vibewatch/           # Python package with the actual code
 │   ├── config.py        # central, type-safe configuration
 │   ├── models.py        # Title: our unified movie/TV data model
-│   └── tmdb.py          # thin TMDb API client
+│   ├── tmdb.py          # thin TMDb API client
+│   ├── embeddings.py    # text -> vector via Gemini (batched, rate-limited)
+│   └── vector_store.py  # Qdrant: collection, indexing, search
 ├── scripts/
-│   └── fetch_titles.py  # offline ingestion: TMDb -> data/titles.json
+│   ├── fetch_titles.py  # offline ingestion: TMDb -> data/titles.json
+│   └── index_titles.py  # offline indexing: embed -> Qdrant
 ├── data/                # locally cached TMDb data (git-ignored)
 ├── .env.example         # template for API keys
 ├── requirements.txt     # Python dependencies (grouped by step)
@@ -137,3 +141,37 @@ de-duplicates (popularity shifts during paging can return the same title twice).
 **Design note:** we do not embed the plot alone. `Title.embedding_text()` builds
 `type + title + genres + plot`, giving the vector more context for a mood/theme query
 to match against. What you embed decides what you can find.
+
+---
+
+## 🧠 Embeddings & indexing
+
+```bash
+python -m scripts.index_titles     # embed titles -> Qdrant collection "titles"
+```
+
+Each title becomes a **3072-dimensional vector** plus a metadata payload, stored as one
+Qdrant point.
+
+Three decisions worth calling out:
+
+- **Asymmetric embeddings.** Documents are embedded with `task_type=RETRIEVAL_DOCUMENT`,
+  queries with `RETRIEVAL_QUERY`. A short mood query and a 40-word plot are different
+  kinds of text; telling the model which role a text plays measurably improves retrieval.
+- **Cosine distance.** It compares the *angle* between vectors and ignores their length,
+  so a three-word query and a long plot are compared by meaning, not by text volume.
+- **Idempotent indexing.** Point ids are `uuid5(media_type + tmdb_id)` — deterministic,
+  so re-running the script updates points instead of duplicating them.
+
+### Rate limits (and an open constraint)
+
+The free tier enforces **two** quotas, counted **per text** rather than per API call:
+100 embeddings per minute, and **1000 per day**. `embeddings.py` therefore throttles
+proactively and, on a 429, honours the retry delay the server returns instead of guessing
+a backoff.
+
+**Open constraint:** our catalogue has 912 titles, so a single full re-index consumes
+almost the entire daily quota — which makes iterating on `embedding_text()` impractical.
+Being evaluated: moving embeddings to a local ONNX model (`fastembed`, no PyTorch,
+~300 MB, no quota) and keeping Gemini for the generation step, where one API call per
+user query is cheap. Embeddings are the bulk operation; generation is not.
