@@ -116,12 +116,26 @@ Vibewatch/
 ├── scripts/
 │   ├── fetch_titles.py  # offline ingestion: TMDb -> data/titles.json
 │   └── index_titles.py  # offline indexing: embed -> Qdrant
+├── tests/               # unit tests for the pure data-transformation logic
 ├── data/                # locally cached TMDb data (git-ignored)
 ├── .env.example         # template for API keys
 ├── requirements.txt     # Python dependencies (grouped by step)
 ├── docker-compose.yml   # Qdrant vector DB
 └── README.md
 ```
+
+---
+
+## 🧪 Tests
+
+```bash
+pytest
+```
+
+Fast, pure unit tests (no API, no Qdrant) covering the data-transformation logic where a
+silent bug would quietly corrupt every downstream vector: the `Title` model and its
+`embedding_text()`, the TMDb movie/TV field mapping in `to_title()`, and the
+`point_id()` idempotency guarantee that keeps re-indexing from creating duplicates.
 
 ---
 
