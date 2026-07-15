@@ -10,3 +10,6 @@ httpx               # HTTP client used to call the TMDb API
 
 # --- Step 3: Embeddings & indexing ---
 google-genai        # Official SDK for the Gemini embedding API
+
+# --- Dev tooling (not needed at runtime) ---
+pytest              # Unit tests for the pure data-transformation logic
