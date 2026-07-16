@@ -111,7 +111,8 @@ Vibewatch/
 │   ├── config.py        # central, type-safe configuration
 │   ├── models.py        # Title: our unified movie/TV data model
 │   ├── tmdb.py          # thin TMDb API client
-│   ├── embeddings.py    # text -> vector via Gemini (batched, rate-limited)
+│   ├── embeddings.py    # text -> vector via Gemini (batched, rate-limited, resumable)
+│   ├── embedding_cache.py  # on-disk cache so an interrupted run resumes
 │   └── vector_store.py  # Qdrant: collection, indexing, search
 ├── scripts/
 │   ├── fetch_titles.py  # offline ingestion: TMDb -> data/titles.json
@@ -183,6 +184,11 @@ The free tier enforces **two** quotas, counted **per text** rather than per API 
 100 embeddings per minute, and **1000 per day**. `embeddings.py` therefore throttles
 proactively and, on a 429, honours the retry delay the server returns instead of guessing
 a backoff.
+
+**Resumable by design.** Computed vectors are checkpointed to disk after every batch
+(`embedding_cache.py`), keyed by a hash of `(model, task_type, text)`. If a run is
+interrupted, re-running skips everything already embedded and only calls the API for what
+is new — so a crash costs at most one batch, not the whole run.
 
 **Open constraint:** our catalogue has 912 titles, so a single full re-index consumes
 almost the entire daily quota — which makes iterating on `embedding_text()` impractical.

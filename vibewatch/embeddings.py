@@ -22,13 +22,18 @@ Three things in here matter a lot and are easy to get wrong:
 """
 
 import time
+from pathlib import Path
 
 from google import genai
 from google.genai import errors, types
 
 from vibewatch.config import settings
+from vibewatch.embedding_cache import EmbeddingCache, text_hash
 
 MODEL = "gemini-embedding-001"
+
+# Where computed document vectors are checkpointed so a run is resumable.
+CACHE_PATH = Path("data/embedding_cache.json")
 
 # The vector length this model produces. Qdrant needs to know it up front.
 VECTOR_SIZE = 3072
@@ -90,26 +95,66 @@ def _embed_batch(texts: list[str], task_type: str) -> list[list[float]]:
     raise last_error  # all retries exhausted
 
 
-def embed_documents(texts: list[str]) -> list[list[float]]:
+def _embed_with_cache(
+    texts: list[str],
+    task_type: str,
+    cache: EmbeddingCache,
+    embed_batch,
+    batch_size: int = BATCH_SIZE,
+    pause_seconds: float = 0.0,
+) -> list[list[float]]:
+    """Embed `texts`, but only the ones not already in `cache`.
+
+    `embed_batch` is passed in rather than hard-wired so this logic can be tested with
+    a stub -- no real API call needed. After each batch we persist the cache, so a
+    crash loses at most one batch instead of the whole run (that is the resumability
+    lesson made concrete).
+    """
+    # Which texts still need embedding? Deduplicate by cache key so a text repeated in
+    # the input is embedded only once; keep first-seen order for readable progress.
+    missing: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        key = text_hash(MODEL, task_type, text)
+        if key not in cache and key not in seen:
+            seen.add(key)
+            missing.append(text)
+
+    if missing:
+        print(f"  {len(missing)} new to embed, {len(texts) - len(missing)} served from cache")
+
+    for start in range(0, len(missing), batch_size):
+        batch = missing[start : start + batch_size]
+        vectors = embed_batch(batch, task_type=task_type)
+        for text, vector in zip(batch, vectors, strict=True):
+            cache.put(text_hash(MODEL, task_type, text), vector)
+        cache.save()  # checkpoint after every batch
+        print(f"  embedded {min(start + batch_size, len(missing))}/{len(missing)} (new)")
+
+        # Pace ourselves to stay under the quota -- but not after the final batch.
+        if start + batch_size < len(missing):
+            time.sleep(pause_seconds)
+
+    # Return a vector for every requested text, in the original order.
+    return [cache.get(text_hash(MODEL, task_type, text)) for text in texts]
+
+
+def embed_documents(texts: list[str], cache_path: Path = CACHE_PATH) -> list[list[float]]:
     """Embed many documents (the movies/TV shows we want to index).
 
-    Throttled to stay inside the free-tier quota. Embedding N texts costs N units of
-    quota, so after each batch we wait long enough that our average rate stays below
-    the limit -- much better than hammering the API and handling the inevitable 429.
+    Resumable: vectors are cached on disk, so re-running only embeds what is new.
+    Throttled: embedding N texts costs N units of quota, so we pace ourselves to stay
+    under the per-minute limit instead of hammering the API and handling 429s.
     """
-    vectors: list[list[float]] = []
-    seconds_per_batch = BATCH_SIZE / EMBEDDINGS_PER_MINUTE * 60  # 50/100*60 = 30s
-
-    for start in range(0, len(texts), BATCH_SIZE):
-        batch = texts[start : start + BATCH_SIZE]
-        vectors.extend(_embed_batch(batch, task_type="RETRIEVAL_DOCUMENT"))
-        print(f"  embedded {len(vectors)}/{len(texts)}")
-
-        # Pace ourselves -- but do not sleep after the final batch.
-        if start + BATCH_SIZE < len(texts):
-            time.sleep(seconds_per_batch)
-
-    return vectors
+    cache = EmbeddingCache(cache_path)
+    seconds_per_batch = BATCH_SIZE / EMBEDDINGS_PER_MINUTE * 60
+    return _embed_with_cache(
+        texts,
+        task_type="RETRIEVAL_DOCUMENT",
+        cache=cache,
+        embed_batch=_embed_batch,
+        pause_seconds=seconds_per_batch,
+    )
 
 
 def embed_query(text: str) -> list[float]:
