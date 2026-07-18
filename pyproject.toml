@@ -1,0 +1,14 @@
+# Central project configuration. The modern, standard place for project metadata and
+# per-tool settings (PEP 518/621) -- one file instead of setup.py + pytest.ini + ...
+
+[project]
+name = "vibewatch"
+version = "0.1.0"
+description = "Semantic movie & TV recommender built with RAG (Gemini + Qdrant)."
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+# Look for tests here by default, so a bare `pytest` finds them.
+testpaths = ["tests"]
+# -q = quiet output; -ra = show a short summary of anything not passing.
+addopts = "-q -ra"
