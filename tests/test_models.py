@@ -42,3 +42,25 @@ def test_types_are_coerced(make_title):
     title = make_title(tmdb_id="550", vote_average="8.4")
     assert title.tmdb_id == 550
     assert title.vote_average == pytest.approx(8.4)
+
+
+def test_context_block_includes_grounding_facts(make_title):
+    block = make_title().as_context_block()
+    assert "Fight Club (1999)" in block
+    assert "Drama, Thriller" in block
+    assert "underground fight club" in block
+
+
+def test_context_block_formats_rating_to_one_decimal(make_title):
+    # The LLM prompt should read "8.4/10", not "8.4000000001/10".
+    assert "Rating: 8.4/10" in make_title(vote_average=8.4).as_context_block()
+
+
+def test_context_block_handles_missing_year(make_title):
+    # A title without a release year must still produce a clean block, not "(None)".
+    assert "(unknown)" in make_title(release_year=None).as_context_block()
+
+
+def test_context_block_labels_media_type(make_title):
+    assert "Movie" in make_title(media_type="movie").as_context_block()
+    assert "TV show" in make_title(media_type="tv").as_context_block()

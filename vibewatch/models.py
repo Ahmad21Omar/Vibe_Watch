@@ -48,3 +48,21 @@ class Title(BaseModel):
             f"Genres: {genres}\n"
             f"Plot: {self.overview}"
         )
+
+    def as_context_block(self) -> str:
+        """A compact, factual description used to GROUND the LLM in step 5.
+
+        The recommendation model is told to reason only from blocks like this -- the
+        titles we actually retrieved -- instead of its own training memory. That
+        grounding is the core of RAG: it is what keeps the answer factual (right year,
+        real plot) and stops the model from inventing films that do not exist.
+        """
+        year = self.release_year if self.release_year is not None else "unknown"
+        kind = "Movie" if self.media_type == "movie" else "TV show"
+        genres = ", ".join(self.genres) if self.genres else "unknown"
+        return (
+            f"{self.title} ({year}) — {kind}\n"
+            f"Genres: {genres}\n"
+            f"Rating: {self.vote_average:.1f}/10\n"
+            f"Plot: {self.overview}"
+        )
