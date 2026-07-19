@@ -10,5 +10,10 @@ requires-python = ">=3.12"
 [tool.pytest.ini_options]
 # Look for tests here by default, so a bare `pytest` finds them.
 testpaths = ["tests"]
-# -q = quiet output; -ra = show a short summary of anything not passing.
-addopts = "-q -ra"
+# -q = quiet output; -ra = short summary of anything not passing.
+# -m 'not integration' keeps a bare `pytest` fast and pure: integration tests hit live
+# Qdrant + Gemini and are opt-in via `pytest -m integration`.
+addopts = "-q -ra -m 'not integration'"
+markers = [
+    "integration: exercises live services (Qdrant + Gemini API); deselected by default, run with `pytest -m integration`",
+]
