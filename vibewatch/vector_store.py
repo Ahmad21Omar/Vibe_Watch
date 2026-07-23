@@ -15,7 +15,16 @@ Euclidean distance would let text length distort the result.
 import uuid
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchAny,
+    MatchValue,
+    PointStruct,
+    Range,
+    VectorParams,
+)
 
 from vibewatch.config import settings
 from vibewatch.embeddings import VECTOR_SIZE
@@ -94,15 +103,77 @@ def index_titles(client: QdrantClient, titles: list[Title], vectors: list[list[f
         print(f"  upserted {min(start + UPSERT_BATCH_SIZE, len(points))}/{len(points)}")
 
 
-def search(client: QdrantClient, query_vector: list[float], limit: int = 5) -> list[dict]:
-    """Find the `limit` nearest titles to a query vector.
+def _build_filter(
+    *,
+    media_type: str | None = None,
+    genres: list[str] | None = None,
+    release_year_min: int | None = None,
+    release_year_max: int | None = None,
+    original_language: str | None = None,
+) -> Filter | None:
+    """Translate simple keyword args into a Qdrant filter -- or None if nothing was asked.
 
-    Step 4 will extend this with metadata filters.
+    Qdrant applies the filter BEFORE the vector search, using the payload indexes we built
+    in create_collection(). So "sci-fi movies since 2015, ranked by mood" stays fast: it
+    first narrows to the points that match the hard constraints, then compares vectors only
+    among those. Filtering after the search would instead throw away good matches and leave
+    fewer than `limit` results.
     """
+    conditions: list[FieldCondition] = []
+
+    if media_type is not None:
+        conditions.append(FieldCondition(key="media_type", match=MatchValue(value=media_type)))
+    if original_language is not None:
+        conditions.append(
+            FieldCondition(key="original_language", match=MatchValue(value=original_language))
+        )
+    if genres:
+        # MatchAny = keep a title if its genre list overlaps the requested genres (OR within
+        # genres): asking for ["Drama", "Thriller"] matches a title tagged with either.
+        conditions.append(FieldCondition(key="genres", match=MatchAny(any=list(genres))))
+    if release_year_min is not None or release_year_max is not None:
+        # gte/lte are inclusive; passing only one bound leaves the other side open.
+        conditions.append(
+            FieldCondition(
+                key="release_year", range=Range(gte=release_year_min, lte=release_year_max)
+            )
+        )
+
+    if not conditions:
+        return None
+    # `must` = AND across the different fields (media_type AND year AND ...).
+    return Filter(must=conditions)
+
+
+def search(
+    client: QdrantClient,
+    query_vector: list[float],
+    limit: int = 5,
+    *,
+    media_type: str | None = None,
+    genres: list[str] | None = None,
+    release_year_min: int | None = None,
+    release_year_max: int | None = None,
+    original_language: str | None = None,
+) -> list[dict]:
+    """Find the `limit` nearest titles to a query vector, optionally within hard filters.
+
+    The vector part answers "what feels like this?"; the optional filters answer "and only
+    among movies / this genre / since this year". Keyword-only so a call reads self-
+    documentingly: `search(client, vec, media_type="movie", release_year_min=2015)`.
+    """
+    query_filter = _build_filter(
+        media_type=media_type,
+        genres=genres,
+        release_year_min=release_year_min,
+        release_year_max=release_year_max,
+        original_language=original_language,
+    )
     response = client.query_points(
         collection_name=COLLECTION_NAME,
         query=query_vector,
         limit=limit,
         with_payload=True,
+        query_filter=query_filter,
     )
     return [{"score": point.score, **point.payload} for point in response.points]

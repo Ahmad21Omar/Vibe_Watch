@@ -65,3 +65,15 @@ def test_mood_query_returns_grounded_ranked_hits():
     # Qdrant returns best-first; the ranking is the whole point of retrieval.
     scores = [hit["score"] for hit in hits]
     assert scores == sorted(scores, reverse=True)
+
+
+@requires_services
+def test_media_type_filter_returns_only_movies():
+    # A hard filter must actually constrain the result set, not just re-rank it.
+    from vibewatch.embeddings import embed_query
+
+    query_vector = embed_query("survival, people fighting to stay alive in a hostile world")
+    hits = search(get_client(), query_vector, limit=5, media_type="movie")
+
+    assert hits, "expected at least one movie to match"
+    assert all(hit["media_type"] == "movie" for hit in hits)
