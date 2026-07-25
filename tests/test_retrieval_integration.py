@@ -19,32 +19,14 @@ get results, best-first, with self-contained payloads and cosine scores in range
 
 import pytest
 
-from vibewatch.config import settings
-from vibewatch.vector_store import COLLECTION_NAME, get_client, search
+from vibewatch.vector_store import get_client, search
 
 pytestmark = pytest.mark.integration
 
-
-def _index_ready() -> bool:
-    """True only if Qdrant is reachable AND the collection actually has points."""
-    try:
-        client = get_client()
-        return (
-            client.collection_exists(COLLECTION_NAME)
-            and client.count(COLLECTION_NAME).count > 0
-        )
-    except Exception:
-        return False
+# `live_services` is the shared skip-guard fixture from conftest.py.
 
 
-requires_services = pytest.mark.skipif(
-    not settings.gemini_api_key or not _index_ready(),
-    reason="needs GEMINI_API_KEY and a populated Qdrant 'titles' collection",
-)
-
-
-@requires_services
-def test_mood_query_returns_grounded_ranked_hits():
+def test_mood_query_returns_grounded_ranked_hits(live_services):
     from vibewatch.embeddings import embed_query
 
     query_vector = embed_query("survival, people fighting to stay alive in a hostile world")
@@ -67,8 +49,7 @@ def test_mood_query_returns_grounded_ranked_hits():
     assert scores == sorted(scores, reverse=True)
 
 
-@requires_services
-def test_media_type_filter_returns_only_movies():
+def test_media_type_filter_returns_only_movies(live_services):
     # A hard filter must actually constrain the result set, not just re-rank it.
     from vibewatch.embeddings import embed_query
 

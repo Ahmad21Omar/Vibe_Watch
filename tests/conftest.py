@@ -7,7 +7,9 @@ on the ONE thing it checks instead of repeating ten boilerplate fields.
 
 import pytest
 
+from vibewatch.config import settings
 from vibewatch.models import Title
+from vibewatch.vector_store import COLLECTION_NAME, get_client
 
 
 @pytest.fixture
@@ -36,3 +38,28 @@ def make_title():
         return Title(**{**defaults, **overrides})
 
     return _make
+
+
+def _index_ready() -> bool:
+    """True only if Qdrant is reachable AND the collection actually has points."""
+    try:
+        client = get_client()
+        return (
+            client.collection_exists(COLLECTION_NAME)
+            and client.count(COLLECTION_NAME).count > 0
+        )
+    except Exception:
+        return False
+
+
+@pytest.fixture
+def live_services():
+    """Skip the test unless Gemini and a populated Qdrant are both actually available.
+
+    Deliberately a fixture rather than a module-level `skipif`: a skipif condition is
+    evaluated at COLLECTION time, so a bare `pytest` -- which deselects the integration
+    tests entirely -- would still have opened a socket to Qdrant and waited for it to time
+    out. A fixture runs only if the test using it runs.
+    """
+    if not settings.gemini_api_key or not _index_ready():
+        pytest.skip("needs GEMINI_API_KEY and a populated Qdrant 'titles' collection")
