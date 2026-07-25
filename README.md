@@ -72,11 +72,16 @@ The query flow (4 → 5) is orchestrated with **LangGraph** and evaluated with *
 
 - [x] **Step 1 — Setup & foundation:** structure, venv, config, Qdrant, README
 - [x] **Step 2 — Data pipeline (TMDb):** fetch and normalize movies & TV shows
-- [ ] **Step 3 — Embeddings & indexing:** vectorize descriptions, store in Qdrant
-      *(code complete; full index blocked by the embedding free-tier quota — see below)*
-- [ ] **Step 4 — Retrieval:** semantic search with metadata filters
-- [ ] **Step 5 — Generation & orchestration:** LangGraph flow + LLM reasoning
+- [x] **Step 3 — Embeddings & indexing:** vectorize descriptions, store in Qdrant
+- [x] **Step 4 — Retrieval:** semantic search with metadata filters
+- [x] **Step 5 — Generation & orchestration:** LangGraph flow + LLM reasoning
 - [ ] **Step 6 — Frontend & evaluation:** Streamlit UI + RAGAS + Docker deployment
+
+The pipeline is end-to-end usable today:
+
+```bash
+python -m scripts.recommend "survival, dark, fighting to stay alive" --type movie
+```
 
 ---
 
@@ -113,11 +118,15 @@ Vibewatch/
 │   ├── tmdb.py          # thin TMDb API client
 │   ├── embeddings.py    # text -> vector via Gemini (batched, rate-limited, resumable)
 │   ├── embedding_cache.py  # on-disk cache so an interrupted run resumes
-│   └── vector_store.py  # Qdrant: collection, indexing, search
+│   ├── vector_store.py  # Qdrant: collection, indexing, filtered search
+│   ├── retrieval.py     # query -> ranked, grounded titles (the retrieval seam)
+│   ├── generation.py    # prompt building + grounded LLM recommendation
+│   └── graph.py         # LangGraph flow: retrieve -> generate (+ retry)
 ├── scripts/
 │   ├── fetch_titles.py  # offline ingestion: TMDb -> data/titles.json
-│   └── index_titles.py  # offline indexing: embed -> Qdrant
-├── tests/               # unit tests for the pure data-transformation logic
+│   ├── index_titles.py  # offline indexing: embed -> Qdrant
+│   └── recommend.py     # online: ask for a recommendation from the CLI
+├── tests/               # fast unit tests + opt-in live integration tests
 ├── data/                # locally cached TMDb data (git-ignored)
 ├── .env.example         # template for API keys
 ├── requirements.txt     # Python dependencies (grouped by step)
@@ -130,13 +139,26 @@ Vibewatch/
 ## 🧪 Tests
 
 ```bash
-pytest
+pytest                  # fast, pure unit tests -- no API, no Docker, no quota
+pytest -m integration   # end-to-end against live Qdrant + Gemini (opt-in)
 ```
 
-Fast, pure unit tests (no API, no Qdrant) covering the data-transformation logic where a
-silent bug would quietly corrupt every downstream vector: the `Title` model and its
-`embedding_text()`, the TMDb movie/TV field mapping in `to_title()`, and the
-`point_id()` idempotency guarantee that keeps re-indexing from creating duplicates.
+The default suite covers the places where a silent bug would quietly corrupt everything
+downstream: the `Title` model and its `embedding_text()`, the TMDb movie/TV field mapping,
+the `point_id()` idempotency guarantee that keeps re-indexing from creating duplicates,
+the metadata filters, the prompt that grounds the LLM, and the graph wiring.
+
+Two patterns make that possible without mocking the code under test. **Dependencies are
+injectable** — `retrieve()` takes its client and embedder, `build_graph()` takes its
+retrieval and generation functions — so tests compile the *real* graph and run the *real*
+search adapter with fakes only at the boundary. And **live services are opt-in**: the
+integration tests carry a marker that a bare `pytest` deselects, and skip themselves
+cleanly when Qdrant or the API key is absent, so a fresh checkout stays green.
+
+The integration suite asserts *structure*, not specific titles — which film ranks first
+shifts as the TMDb catalogue changes, so pinning one would only produce a flaky test. What
+it does pin is the property RAG exists for: the answer must name a title that was actually
+retrieved.
 
 ---
 
@@ -190,8 +212,65 @@ a backoff.
 interrupted, re-running skips everything already embedded and only calls the API for what
 is new — so a crash costs at most one batch, not the whole run.
 
-**Open constraint:** our catalogue has 912 titles, so a single full re-index consumes
-almost the entire daily quota — which makes iterating on `embedding_text()` impractical.
-Being evaluated: moving embeddings to a local ONNX model (`fastembed`, no PyTorch,
-~300 MB, no quota) and keeping Gemini for the generation step, where one API call per
-user query is cheap. Embeddings are the bulk operation; generation is not.
+**Standing constraint:** the catalogue has 912 titles, so a single full re-index consumes
+almost the entire daily quota. The index is built and cached, so this costs nothing at
+query time — but it does make iterating on `embedding_text()` a once-a-day affair. The
+escape hatch, if that becomes limiting: move embeddings to a local ONNX model
+(`fastembed`, no PyTorch, ~300 MB, no quota) and keep Gemini for generation, where one API
+call per user query is cheap. Embeddings are the bulk operation; generation is not.
+
+---
+
+## 🔎 Retrieval
+
+Two different questions, deliberately answered by two different mechanisms:
+
+| Question | Answered by | Character |
+|---|---|---|
+| "What *feels* like this?" | vector similarity | soft, graded, a ranking |
+| "And only movies since 2015?" | metadata filter | hard, yes/no |
+
+A vector cannot reliably express "movies only" — the embedding of a survival *movie* is
+still very close to a survival *series*. Hard constraints belong in the filter, not in the
+vector and not in the prompt.
+
+```python
+retrieve("dark, hopeless survival", media_type="movie", release_year_min=2015)
+```
+
+**The decision that matters here is pre-filtering.** Qdrant applies the filter *during*
+the vector search, using the payload indexes created with the collection. The naive
+alternative — search top-5, then discard what does not match — would return two results
+where the catalogue holds two hundred matching films. That is the kind of bug that never
+looks broken in production; it just quietly answers worse.
+
+---
+
+## ✍️ Generation & orchestration
+
+```
+                    hits found
+    query --> [retrieve] ------> [generate] --> answer
+                  ^   |
+                  |   | nothing found, but filters were set
+                  |   v
+              [relax_filters]
+```
+
+The LLM is given the retrieved titles as numbered, factual blocks and told that they are
+the only titles that exist. Grounding is enforced on four levels: a static system
+instruction holding the rules (separate from the volatile data, and cacheable), context
+blocks built by the same `Title.as_context_block()` used everywhere else, a short-circuit
+that never calls the model when retrieval came back empty (with no context, anything it
+writes is invented), and a test asserting the answer names a retrieved title.
+
+The model also acts as a **re-ranker**: it is told it may skip a higher-ranked candidate,
+because similarity is not the same as suitability. In a real run, *Fight Club* ranked
+second for a survival query and the model correctly passed it over.
+
+**Why a graph for two steps?** Honestly: the linear part alone would not justify one. It
+starts paying off at the conditional edge. Hard filters are unforgiving — "TV shows from
+2024 tagged Western" easily matches nothing in a 900-title catalogue — so when a filtered
+search comes back empty the flow retries once without the filters instead of giving up on
+a mood it could have matched. The `relaxed` flag caps that at one retry and is surfaced to
+the user, because silently ignoring what someone asked for is worse than showing nothing.
