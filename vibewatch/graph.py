@@ -1,12 +1,19 @@
 """The LangGraph flow that ties retrieval and generation into one pipeline.
 
-    query --> [retrieve] --> hits --> [generate] --> answer
+                    hits found
+    query --> [retrieve] ------> [generate] --> answer
+                  ^   |
+                  |   | nothing found, but filters were set
+                  |   v
+              [relax_filters]
 
-Honest framing, because this is the question an interviewer will ask: for two sequential
-steps, LangGraph buys nothing that `generate_recommendation(query, retrieve(query))` would
-not. The reason to introduce it HERE, while the flow is still trivial, is what comes next:
+Honest framing, because this is the question an interviewer will ask: two sequential steps
+alone would not justify a graph -- `generate_recommendation(query, retrieve(query))` does
+that in one line. The retry loop is where it starts paying off: the route out of `retrieve`
+depends on its RESULT, and expressing that as a conditional edge keeps each node a small
+pure function instead of growing an if/else pyramid inside one procedure. What follows
+later rides on the same structure:
 
-- conditional edges -- "no hits? drop the filters and search again" (added in the next step)
 - extra nodes -- query understanding, re-ranking, a guard that checks the answer only
   names retrieved titles
 - state that every node reads and extends, instead of threading arguments through calls
@@ -45,6 +52,10 @@ class RecommendationState(TypedDict):
     limit: NotRequired[int]
     hits: NotRequired[list[dict]]
     answer: NotRequired[str]
+    # True once the filters were dropped to rescue an empty result. It also doubles as the
+    # loop guard, and the UI should surface it -- silently ignoring what the user asked for
+    # ("only movies since 2020") would be worse than showing nothing.
+    relaxed: NotRequired[bool]
 
 
 def build_graph(
@@ -62,16 +73,42 @@ def build_graph(
         )
         return {"hits": hits}
 
+    def relax_filters_node(state: RecommendationState) -> dict:
+        """Drop the hard filters so the retry searches the whole catalogue."""
+        return {"filters": {}, "relaxed": True}
+
     def generate_node(state: RecommendationState) -> dict:
         answer = generate_fn(state["query"], state["hits"])
         return {"answer": answer}
 
+    def route_after_retrieve(state: RecommendationState) -> str:
+        """Decide where to go based on what retrieval actually found.
+
+        Hard filters are unforgiving by design -- "TV shows from 2024 tagged Western" can
+        easily match nothing in a 900-title catalogue. Rather than answering "nothing
+        found" when the MOOD is perfectly matchable, we retry once without the filters.
+        The `relaxed` flag makes that at most one retry: without it, a genuinely empty
+        catalogue would send the graph round forever.
+        """
+        if state["hits"]:
+            return "generate"
+        if state.get("filters") and not state.get("relaxed"):
+            return "relax_filters"
+        # Nothing found and nothing left to loosen -- generate() answers honestly.
+        return "generate"
+
     builder = StateGraph(RecommendationState)
     builder.add_node("retrieve", retrieve_node)
+    builder.add_node("relax_filters", relax_filters_node)
     builder.add_node("generate", generate_node)
 
     builder.add_edge(START, "retrieve")
-    builder.add_edge("retrieve", "generate")
+    # The explicit destination list is not redundant: it is what lets LangGraph draw and
+    # validate the graph, since the possible targets cannot be inferred from a `-> str`.
+    builder.add_conditional_edges(
+        "retrieve", route_after_retrieve, ["relax_filters", "generate"]
+    )
+    builder.add_edge("relax_filters", "retrieve")
     builder.add_edge("generate", END)
 
     return builder.compile()
