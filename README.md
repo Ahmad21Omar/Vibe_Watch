@@ -75,12 +75,15 @@ The query flow (4 → 5) is orchestrated with **LangGraph** and evaluated with *
 - [x] **Step 3 — Embeddings & indexing:** vectorize descriptions, store in Qdrant
 - [x] **Step 4 — Retrieval:** semantic search with metadata filters
 - [x] **Step 5 — Generation & orchestration:** LangGraph flow + LLM reasoning
-- [ ] **Step 6 — Frontend & evaluation:** Streamlit UI + RAGAS + Docker deployment
+- [ ] **Step 6 — Frontend & evaluation:** Streamlit UI ✅ · retrieval metrics ✅ ·
+      generation metrics (faithfulness) and Docker deployment still open
 
 The pipeline is end-to-end usable today:
 
 ```bash
-python -m scripts.recommend "survival, dark, fighting to stay alive" --type movie
+streamlit run app.py                                    # the UI
+python -m scripts.recommend "dark survival" --type movie  # the same thing, from the CLI
+python -m scripts.evaluate_retrieval                    # how good is retrieval?
 ```
 
 ---
@@ -112,6 +115,7 @@ docker compose up -d
 
 ```
 Vibewatch/
+├── app.py               # Streamlit UI: mood in, recommendation + sources out
 ├── vibewatch/           # Python package with the actual code
 │   ├── config.py        # central, type-safe configuration
 │   ├── models.py        # Title: our unified movie/TV data model
@@ -121,11 +125,15 @@ Vibewatch/
 │   ├── vector_store.py  # Qdrant: collection, indexing, filtered search
 │   ├── retrieval.py     # query -> ranked, grounded titles (the retrieval seam)
 │   ├── generation.py    # prompt building + grounded LLM recommendation
-│   └── graph.py         # LangGraph flow: retrieve -> generate (+ retry)
+│   ├── graph.py         # LangGraph flow: retrieve -> generate (+ retry)
+│   └── evaluation.py    # retrieval metrics: recall@k, MRR
 ├── scripts/
 │   ├── fetch_titles.py  # offline ingestion: TMDb -> data/titles.json
 │   ├── index_titles.py  # offline indexing: embed -> Qdrant
-│   └── recommend.py     # online: ask for a recommendation from the CLI
+│   ├── recommend.py     # online: ask for a recommendation from the CLI
+│   └── evaluate_retrieval.py  # measure retrieval against the gold set
+├── eval/
+│   └── gold_queries.json  # hand-labelled queries for retrieval evaluation
 ├── tests/               # fast unit tests + opt-in live integration tests
 ├── data/                # locally cached TMDb data (git-ignored)
 ├── .env.example         # template for API keys
@@ -139,8 +147,8 @@ Vibewatch/
 ## 🧪 Tests
 
 ```bash
-pytest                  # fast, pure unit tests -- no API, no Docker, no quota
-pytest -m integration   # end-to-end against live Qdrant + Gemini (opt-in)
+pytest                  # 78 fast, pure unit tests -- no API, no Docker, no quota
+pytest -m integration   # 5 end-to-end tests against live Qdrant + Gemini (opt-in)
 ```
 
 The default suite covers the places where a silent bug would quietly corrupt everything
@@ -274,3 +282,44 @@ starts paying off at the conditional edge. Hard filters are unforgiving — "TV 
 search comes back empty the flow retries once without the filters instead of giving up on
 a mood it could have matched. The `relaxed` flag caps that at one retry and is surfaced to
 the user, because silently ignoring what someone asked for is worse than showing nothing.
+
+---
+
+## 📊 Evaluation
+
+```bash
+python -m scripts.evaluate_retrieval             # 12 labelled queries, one embedding each
+python -m scripts.evaluate_retrieval --verbose   # ...and what came back for each
+```
+
+Everything above measures whether the pipeline is **correct**. This measures whether it is
+**good** — two different questions, and only the second one can tell you if a change to
+`embedding_text()` helped.
+
+| Metric | Current | Ceiling | What it answers |
+|---|---|---|---|
+| recall@5 | 0.832 | 0.958 | Of the titles we call relevant, how many made the top 5? |
+| MRR | 0.917 | 1.0 | How high up is the *first* relevant hit? |
+
+Recall is the one that matters for RAG: the generator can only recommend what retrieval
+handed it, so a title missing here is unrecoverable downstream. MRR is where re-ranking
+work would show up. The "ceiling" column is not decoration — several queries carry more
+than five labels, so recall@5 is arithmetically capped below 1.0.
+
+**How the labels were made, and why that limits the numbers.** They were written by hand,
+then extended by *pooling*: run the retriever, judge its top 5, add what is genuinely
+relevant. That is standard IR practice (TREC works this way) because nobody labels 912
+titles per query — and it carries the standard bias: a title no system ever surfaces never
+gets judged, so the absolute score is optimistic. **Only the delta between two runs is
+trustworthy.**
+
+The first run made the case for measuring rather than eyeballing. *"Mind-bending science
+fiction that plays with reality"* scored **recall 0.00** — while returning *Black Mirror*,
+*Eternal Sunshine of the Spotless Mind*, *The Prestige* and *Westworld*. The retrieval was
+excellent; the labels were incomplete. The same run caught two labels that are not in the
+catalogue at all and two that were simply wrong. A metric's first job is to be debugged.
+
+**Still open:** generation-side metrics. Retrieval is measured; whether the written
+recommendation stays faithful to its sources is currently only covered by an
+integration test asserting the answer names a retrieved title. Faithfulness and answer
+relevancy (RAGAS, or a small LLM-as-judge over the same gold set) are the next step.
