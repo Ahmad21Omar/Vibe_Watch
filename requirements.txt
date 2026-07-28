@@ -14,5 +14,8 @@ google-genai        # Official SDK for the Gemini embedding API
 # --- Step 5: Generation & orchestration ---
 langgraph           # Orchestrates retrieve -> generate as a stateful graph
 
+# --- Step 6: Frontend & evaluation ---
+streamlit           # UI: mood in, recommendation + retrieved sources out
+
 # --- Dev tooling (not needed at runtime) ---
 pytest              # Unit tests for the pure data-transformation logic

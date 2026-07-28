@@ -1,0 +1,158 @@
+"""Streamlit frontend: describe a mood, get a grounded recommendation.
+
+Run:  streamlit run app.py     (needs Qdrant up and the index populated)
+
+The layout is a deliberate argument about RAG, not just a form: the generated answer sits
+next to the titles it was generated FROM. A recommender that only shows prose asks you to
+trust it; showing the retrieved evidence alongside lets anyone check the answer against
+its sources -- which is exactly what grounding means and the first thing a reviewer of an
+LLM feature should be able to do.
+
+Streamlit re-runs this whole script on every interaction, so anything expensive has to be
+cached explicitly. That is what `@st.cache_data` / `@st.cache_resource` are for below --
+without them, every click would spend Gemini quota again.
+"""
+
+import streamlit as st
+
+from vibewatch.graph import recommend
+from vibewatch.vector_store import available_genres, get_client
+
+POSTER_BASE_URL = "https://image.tmdb.org/t/p/w200"
+
+# Bounds of the year slider. At either extreme we send NO bound to Qdrant rather than the
+# number itself -- otherwise a title with an unknown release year would be filtered out by
+# a range the user never actually narrowed.
+EARLIEST_YEAR = 1950
+LATEST_YEAR = 2030
+
+EXAMPLE_QUERIES = [
+    "survival, dark, fighting to stay alive",
+    "cosy and funny, something to fall asleep to",
+    "mind-bending sci-fi that makes me think",
+    "a slow, sad story about family",
+]
+
+st.set_page_config(page_title="Vibewatch", page_icon="🎬", layout="wide")
+
+
+@st.cache_resource
+def _client():
+    """One Qdrant client for the whole session (cache_resource = not serialized)."""
+    return get_client()
+
+
+@st.cache_data(show_spinner=False)
+def _genres() -> list[str]:
+    """The catalogue's real genres. Cached: it changes only when we re-index."""
+    try:
+        return available_genres(_client())
+    except Exception:
+        # A dead Qdrant should not blank the page -- the query below will report it.
+        return []
+
+
+@st.cache_data(show_spinner=False)
+def _recommend(query: str, limit: int, filters: dict) -> dict:
+    """Cached pipeline run.
+
+    Keyed on the query AND the filters, so re-rendering (a checkbox, a resize) is free
+    while a genuinely new request still goes through. Every uncached run costs one
+    embedding of the daily quota plus one LLM call.
+    """
+    return recommend(query, limit=limit, **filters)
+
+
+def render_hit(hit: dict) -> None:
+    """One retrieved title: poster, name, facts, plot."""
+    poster, facts = st.columns([1, 3])
+
+    with poster:
+        if hit.get("poster_path"):
+            st.image(f"{POSTER_BASE_URL}{hit['poster_path']}")
+        else:
+            st.markdown("### 🎬")
+
+    with facts:
+        year = hit.get("release_year") or "—"
+        kind = "Movie" if hit["media_type"] == "movie" else "TV show"
+        st.markdown(f"**{hit['title']}** ({year}) · {kind}")
+        st.caption(
+            f"{', '.join(hit.get('genres') or []) or 'unknown'} · "
+            f"⭐ {hit.get('vote_average', 0):.1f} · similarity {hit['score']:.3f}"
+        )
+        st.write(hit.get("overview", ""))
+
+
+st.title("🎬 Vibewatch")
+st.caption("Describe a mood or theme — not a title. The catalogue is searched by meaning.")
+
+with st.sidebar:
+    st.header("Filters")
+    st.caption("Hard constraints, applied during the search — not left to the model.")
+
+    media_label = st.radio("Type", ["Anything", "Movies", "TV shows"], horizontal=True)
+    chosen_genres = st.multiselect("Genres", _genres(), help="Matches ANY of the selected")
+    # A two-handle range rather than two "any"-able dropdowns: at the extremes it means
+    # "no bound at all" (see below), so the common case needs no interaction.
+    year_from, year_to = st.slider(
+        "Release year",
+        min_value=EARLIEST_YEAR,
+        max_value=LATEST_YEAR,
+        value=(EARLIEST_YEAR, LATEST_YEAR),
+    )
+    limit = st.slider("Titles to retrieve", min_value=3, max_value=10, value=5)
+
+query = st.text_input(
+    "What are you in the mood for?",
+    placeholder=EXAMPLE_QUERIES[0],
+)
+
+st.caption("Try: " + " · ".join(f"*{example}*" for example in EXAMPLE_QUERIES))
+
+if st.button("Recommend", type="primary") or query:
+    if not query.strip():
+        st.info("Describe a mood to get started.")
+        st.stop()
+
+    filters = {
+        key: value
+        for key, value in {
+            "media_type": {"Movies": "movie", "TV shows": "tv"}.get(media_label),
+            "genres": chosen_genres or None,
+            "release_year_min": year_from if year_from > EARLIEST_YEAR else None,
+            "release_year_max": year_to if year_to < LATEST_YEAR else None,
+        }.items()
+        if value is not None
+    }
+
+    with st.spinner("Searching the catalogue and writing a recommendation..."):
+        try:
+            state = _recommend(query, limit, filters)
+        except Exception as error:
+            st.error(f"Something went wrong: {error}")
+            st.caption(
+                "Is Qdrant running (`docker compose up -d`) and is GEMINI_API_KEY set?"
+            )
+            st.stop()
+
+    # Never silently ignore what the user asked for: if the filters matched nothing and
+    # the graph retried without them, say so.
+    if state.get("relaxed"):
+        st.warning(
+            "No title matched your filters, so they were dropped for this search.",
+            icon="⚠️",
+        )
+
+    answer, sources = st.columns([3, 2], gap="large")
+
+    with answer:
+        st.subheader("Recommendation")
+        st.write(state["answer"])
+
+    with sources:
+        st.subheader("Retrieved titles")
+        st.caption("The only titles the model was allowed to recommend from.")
+        for hit in state["hits"]:
+            render_hit(hit)
+            st.divider()
