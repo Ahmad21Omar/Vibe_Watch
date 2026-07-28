@@ -1,0 +1,116 @@
+{
+  "_about": [
+    "Hand-labelled evaluation set for retrieval quality.",
+    "Each entry is a mood query plus titles a human considers clearly relevant.",
+    "",
+    "HOW THESE LABELS WERE MADE (this matters for reading the numbers):",
+    "First written from memory, then extended by POOLING -- running the retriever and",
+    "judging its top-5 by hand, adding the ones that are genuinely relevant. Pooling is",
+    "the standard IR practice (TREC works this way) because nobody can label 912 titles",
+    "per query. Its bias is equally standard: a title no system ever surfaces never gets",
+    "judged, so the absolute score is OPTIMISTIC. Only the DELTA between two runs of the",
+    "same set is trustworthy.",
+    "",
+    "The first run made the case for it vividly: 'mind-bending science fiction' scored",
+    "recall 0.00 while returning Black Mirror, Eternal Sunshine, The Prestige and",
+    "Westworld -- an excellent result the labels simply did not know about. It also",
+    "exposed two labels ('Alien', 'The Road') that are not in the catalogue at all, and",
+    "two wrong ones (Wolf of Wall Street / Django Unchained as 'mafia' films).",
+    "",
+    "Known limits: small (12 queries), single annotator, biased towards well-known",
+    "titles. Every label must exist in the index or it can never be retrieved --",
+    "scripts/evaluate_retrieval.py checks that before spending any quota."
+  ],
+  "queries": [
+    {
+      "query": "survival in space, one person against impossible odds",
+      "relevant": ["The Martian", "Interstellar", "Project Hail Mary"]
+    },
+    {
+      "query": "mind-bending science fiction that plays with reality",
+      "relevant": [
+        "Inception",
+        "The Matrix",
+        "Black Mirror",
+        "Eternal Sunshine of the Spotless Mind",
+        "The Prestige",
+        "Westworld"
+      ]
+    },
+    {
+      "query": "a dark crime story with a brilliant twist",
+      "relevant": [
+        "Se7en",
+        "Shutter Island",
+        "No Country for Old Men",
+        "Fargo"
+      ]
+    },
+    {
+      "query": "epic fantasy quest with swords, magic and a long journey",
+      "relevant": [
+        "The Lord of the Rings: The Fellowship of the Ring",
+        "The Lord of the Rings: The Two Towers",
+        "The Lord of the Rings: The Return of the King",
+        "Game of Thrones",
+        "Frieren: Beyond Journey's End",
+        "Princess Mononoke"
+      ]
+    },
+    {
+      "query": "heartwarming animated film to watch with the whole family",
+      "relevant": ["Inside Out", "Up", "Toy Story", "Coco", "WALL·E", "Turning Red"]
+    },
+    {
+      "query": "post-apocalyptic wasteland, everything has collapsed",
+      "relevant": [
+        "Mad Max: Fury Road",
+        "Furiosa: A Mad Max Saga",
+        "The Walking Dead",
+        "28 Years Later",
+        "Silo"
+      ]
+    },
+    {
+      "query": "prison drama about friendship and holding on to hope",
+      "relevant": ["The Shawshank Redemption", "The Green Mile", "Prison Break"]
+    },
+    {
+      "query": "superheroes teaming up to save the world",
+      "relevant": [
+        "The Avengers",
+        "Avengers: Endgame",
+        "Avengers: Infinity War",
+        "Avengers: Age of Ultron",
+        "Avengers: Doomsday"
+      ]
+    },
+    {
+      "query": "a wizard school full of magic and young students",
+      "relevant": [
+        "Harry Potter and the Philosopher's Stone",
+        "Harry Potter and the Chamber of Secrets",
+        "Harry Potter and the Prisoner of Azkaban",
+        "Harry Potter and the Order of the Phoenix"
+      ]
+    },
+    {
+      "query": "mafia family, power, loyalty and betrayal",
+      "relevant": [
+        "The Godfather",
+        "The Godfather Part II",
+        "The Sopranos",
+        "GoodFellas",
+        "Scarface"
+      ]
+    },
+    {
+      "query": "kids in a small town facing something supernatural",
+      "relevant": ["Stranger Things", "FROM", "Weapons"]
+    },
+    {
+      "query": "a sweeping tragic love story",
+      "relevant": ["Titanic", "The Notebook", "\"Wuthering Heights\""]
+    }
+  ]
+}

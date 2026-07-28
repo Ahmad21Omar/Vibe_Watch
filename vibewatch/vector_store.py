@@ -39,6 +39,9 @@ UPSERT_BATCH_SIZE = 100
 # on purpose -- silently truncating the list would hide filter options from the user.
 MAX_FACET_VALUES = 100
 
+# Page size when walking the whole collection.
+SCROLL_BATCH_SIZE = 256
+
 
 def get_client() -> QdrantClient:
     return QdrantClient(url=settings.qdrant_url)
@@ -122,6 +125,32 @@ def available_genres(client: QdrantClient) -> list[str]:
         collection_name=COLLECTION_NAME, key="genres", limit=MAX_FACET_VALUES
     )
     return sorted(hit.value for hit in response.hits)
+
+
+def indexed_titles(client: QdrantClient) -> set[str]:
+    """Every title name currently in the index.
+
+    Used by the evaluation to spot gold labels that are not in the catalogue at all: such
+    a label can never be retrieved, so it would depress the score forever and look like a
+    retrieval problem when it is really a DATA problem.
+
+    Scrolls the payloads (no vectors, one field) rather than embedding anything -- the
+    obvious alternative, searching for each title by name, would burn the daily embedding
+    quota just to answer a question about metadata.
+    """
+    titles: set[str] = set()
+    offset = None
+    while True:
+        points, offset = client.scroll(
+            collection_name=COLLECTION_NAME,
+            limit=SCROLL_BATCH_SIZE,
+            with_payload=["title"],
+            with_vectors=False,
+            offset=offset,
+        )
+        titles.update(point.payload["title"] for point in points)
+        if offset is None:  # Qdrant returns None once the last page is done
+            return titles
 
 
 def _build_filter(

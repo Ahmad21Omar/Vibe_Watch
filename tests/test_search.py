@@ -14,6 +14,7 @@ from vibewatch.vector_store import (
     COLLECTION_NAME,
     _build_filter,
     available_genres,
+    indexed_titles,
     search,
 )
 
@@ -164,3 +165,40 @@ def test_available_genres_facets_the_genres_field():
     assert call["key"] == "genres"
     # A limit below the number of real genres would silently hide filter options.
     assert call["limit"] >= 50
+
+
+# --- walking the whole collection (used by the evaluation) -------------------------------
+
+
+class _ScrollClient:
+    """Fake client that hands out pages, mimicking Qdrant's (points, next_offset) protocol."""
+
+    def __init__(self, pages):
+        self._pages = pages
+        self.calls: list[dict] = []
+
+    def scroll(self, **kwargs):
+        self.calls.append(kwargs)
+        titles, next_offset = self._pages[len(self.calls) - 1]
+        points = [SimpleNamespace(payload={"title": title}) for title in titles]
+        return points, next_offset
+
+
+def test_indexed_titles_follows_the_scroll_offset_to_the_last_page():
+    # Paging is where this quietly breaks: stopping after page one would report a
+    # catalogue that is missing most of its titles -- and the evaluation would then
+    # "warn" about perfectly valid gold labels.
+    client = _ScrollClient([(["Alien", "The Road"], "page2"), (["Toy Story"], None)])
+
+    assert indexed_titles(client) == {"Alien", "The Road", "Toy Story"}
+    assert client.calls[0]["offset"] is None
+    assert client.calls[1]["offset"] == "page2"
+
+
+def test_indexed_titles_asks_for_no_vectors():
+    # Pulling 3072 floats per point to read one string would be needlessly slow.
+    client = _ScrollClient([([], None)])
+    indexed_titles(client)
+
+    assert client.calls[0]["with_vectors"] is False
+    assert client.calls[0]["with_payload"] == ["title"]
