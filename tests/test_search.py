@@ -10,7 +10,12 @@ runs in milliseconds -- the same "fast, pure" philosophy as the rest of the suit
 
 from types import SimpleNamespace
 
-from vibewatch.vector_store import COLLECTION_NAME, _build_filter, search
+from vibewatch.vector_store import (
+    COLLECTION_NAME,
+    _build_filter,
+    available_genres,
+    search,
+)
 
 
 class _RecordingClient:
@@ -127,3 +132,35 @@ def test_search_without_filters_passes_none():
     client = _RecordingClient([])
     search(client, [0.1] * 3072)
     assert client.calls[0]["query_filter"] is None
+
+
+# --- genre facet (drives the UI's filter options) ----------------------------------------
+
+
+class _FacetClient:
+    def __init__(self, values):
+        self._values = values
+        self.calls: list[dict] = []
+
+    def facet(self, **kwargs):
+        self.calls.append(kwargs)
+        hits = [SimpleNamespace(value=value, count=1) for value in self._values]
+        return SimpleNamespace(hits=hits)
+
+
+def test_available_genres_are_sorted_and_deduplicated_by_qdrant():
+    # Qdrant already returns each distinct value once; our job is a stable, readable
+    # order, because an unsorted dropdown is a UI bug that no test would otherwise catch.
+    client = _FacetClient(["Thriller", "Action", "Drama"])
+    assert available_genres(client) == ["Action", "Drama", "Thriller"]
+
+
+def test_available_genres_facets_the_genres_field():
+    client = _FacetClient([])
+    available_genres(client)
+
+    (call,) = client.calls
+    assert call["collection_name"] == COLLECTION_NAME
+    assert call["key"] == "genres"
+    # A limit below the number of real genres would silently hide filter options.
+    assert call["limit"] >= 50

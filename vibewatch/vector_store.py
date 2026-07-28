@@ -35,6 +35,10 @@ COLLECTION_NAME = "titles"
 # How many points we send to Qdrant per request.
 UPSERT_BATCH_SIZE = 100
 
+# Upper bound for the genre facet. TMDb defines roughly 20 genres, so this is generous
+# on purpose -- silently truncating the list would hide filter options from the user.
+MAX_FACET_VALUES = 100
+
 
 def get_client() -> QdrantClient:
     return QdrantClient(url=settings.qdrant_url)
@@ -101,6 +105,23 @@ def index_titles(client: QdrantClient, titles: list[Title], vectors: list[list[f
             points=points[start : start + UPSERT_BATCH_SIZE],
         )
         print(f"  upserted {min(start + UPSERT_BATCH_SIZE, len(points))}/{len(points)}")
+
+
+def available_genres(client: QdrantClient) -> list[str]:
+    """The genres that actually occur in the index, alphabetically.
+
+    A UI must offer the genres the catalogue really contains -- a hardcoded list would
+    drift the moment TMDb adds one, and offering a genre that matches nothing sends the
+    user straight into an empty result.
+
+    `facet` aggregates on the server using the payload index we built for `genres`: one
+    small request instead of scrolling all 900 payloads across the wire just to collect
+    distinct values.
+    """
+    response = client.facet(
+        collection_name=COLLECTION_NAME, key="genres", limit=MAX_FACET_VALUES
+    )
+    return sorted(hit.value for hit in response.hits)
 
 
 def _build_filter(
