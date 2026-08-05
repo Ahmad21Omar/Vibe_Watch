@@ -23,6 +23,7 @@ from google import genai
 from google.genai import types
 
 from vibewatch.config import settings
+from vibewatch.gemini import call_with_retry
 from vibewatch.models import Title
 
 # A pinned GA model, not a `-preview` one and not the moving `gemini-flash-latest` alias:
@@ -77,16 +78,25 @@ def _get_client() -> genai.Client:
 
 
 def _call_gemini(prompt: str) -> str:
-    """Send one prompt to Gemini and return the plain-text answer."""
-    response = _get_client().models.generate_content(
-        model=LLM_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_INSTRUCTION,
-            temperature=TEMPERATURE,
-        ),
-    )
-    return (response.text or "").strip()
+    """Send one prompt to Gemini and return the plain-text answer.
+
+    Wrapped in the shared retry policy: a busy model (503) or a rate limit (429) is a
+    temporary condition, and a user watching a spinner would much rather wait a few
+    seconds than read an error. Anything else fails immediately.
+    """
+
+    def request() -> str:
+        response = _get_client().models.generate_content(
+            model=LLM_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION,
+                temperature=TEMPERATURE,
+            ),
+        )
+        return (response.text or "").strip()
+
+    return call_with_retry(request)
 
 
 def _context_block(hit: dict) -> str:

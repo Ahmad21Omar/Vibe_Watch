@@ -25,10 +25,11 @@ import time
 from pathlib import Path
 
 from google import genai
-from google.genai import errors, types
+from google.genai import types
 
 from vibewatch.config import settings
 from vibewatch.embedding_cache import EmbeddingCache, text_hash
+from vibewatch.gemini import call_with_retry
 
 MODEL = "gemini-embedding-001"
 
@@ -45,7 +46,6 @@ VECTOR_SIZE = 3072
 EMBEDDINGS_PER_MINUTE = 90
 
 BATCH_SIZE = 50
-MAX_RETRIES = 6
 
 # Created on first use and then reused -- the client holds a connection pool. Lazy rather
 # than at import time so that importing this module never needs an API key: the pure unit
@@ -60,48 +60,22 @@ def _get_client() -> genai.Client:
     return _client
 
 
-def _server_retry_delay(error: errors.APIError) -> float | None:
-    """Read the retry delay the API sends us, e.g. {'retryDelay': '42s'}.
-
-    Guessing a backoff is a fallback; if the server tells us how long to wait,
-    that is always the better number. The field is nested and optional, so we
-    dig for it defensively and return None if it is not there.
-    """
-    details = getattr(error, "details", None) or {}
-    for detail in details.get("error", {}).get("details", []):
-        delay = detail.get("retryDelay")
-        if delay:
-            return float(delay.rstrip("s"))
-    return None
-
-
 def _embed_batch(texts: list[str], task_type: str) -> list[list[float]]:
-    """Embed one batch, retrying on transient errors (429 rate limit, 5xx)."""
-    last_error: errors.APIError | None = None
+    """Embed one batch, retrying on transient errors (429 rate limit, 5xx).
 
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = _get_client().models.embed_content(
-                model=MODEL,
-                contents=texts,
-                config=types.EmbedContentConfig(task_type=task_type),
-            )
-            return [embedding.values for embedding in response.embeddings]
+    The retry policy itself lives in `vibewatch.gemini` -- the generation step needs
+    exactly the same behaviour, and one shared implementation cannot drift.
+    """
 
-        except errors.APIError as error:
-            # 429 = rate limit, 5xx = server hiccup. Both are worth retrying.
-            # Anything else (401 bad key, 400 bad request) is our fault: retrying
-            # would not help, so fail immediately and loudly.
-            if error.code != 429 and error.code < 500:
-                raise
+    def request() -> list[list[float]]:
+        response = _get_client().models.embed_content(
+            model=MODEL,
+            contents=texts,
+            config=types.EmbedContentConfig(task_type=task_type),
+        )
+        return [embedding.values for embedding in response.embeddings]
 
-            last_error = error
-            # Prefer the server's own number; fall back to exponential backoff.
-            wait = _server_retry_delay(error) or 2**attempt
-            print(f"    API error {error.code}, waiting {wait:.0f}s...")
-            time.sleep(wait + 1)  # +1s safety margin
-
-    raise last_error  # all retries exhausted
+    return call_with_retry(request)
 
 
 def _embed_with_cache(
