@@ -47,8 +47,17 @@ EMBEDDINGS_PER_MINUTE = 90
 BATCH_SIZE = 50
 MAX_RETRIES = 6
 
-# Created once at import time and reused -- the client holds a connection pool.
-_client = genai.Client(api_key=settings.gemini_api_key)
+# Created on first use and then reused -- the client holds a connection pool. Lazy rather
+# than at import time so that importing this module never needs an API key: the pure unit
+# tests import it constantly and must run on a fresh clone without any secrets.
+_client: genai.Client | None = None
+
+
+def _get_client() -> genai.Client:
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=settings.require("gemini_api_key"))
+    return _client
 
 
 def _server_retry_delay(error: errors.APIError) -> float | None:
@@ -72,7 +81,7 @@ def _embed_batch(texts: list[str], task_type: str) -> list[list[float]]:
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = _client.models.embed_content(
+            response = _get_client().models.embed_content(
                 model=MODEL,
                 contents=texts,
                 config=types.EmbedContentConfig(task_type=task_type),

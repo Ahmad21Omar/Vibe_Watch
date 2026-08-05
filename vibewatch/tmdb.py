@@ -25,7 +25,7 @@ class TMDbClient:
         self._client = httpx.Client(base_url=BASE_URL, timeout=30.0)
 
     def _get(self, path: str, **params) -> dict:
-        params["api_key"] = settings.tmdb_api_key
+        params["api_key"] = settings.require("tmdb_api_key")
         response = self._client.get(path, params=params)
         response.raise_for_status()  # fail loudly on 401 (bad key) / 404 / 429
         return response.json()
