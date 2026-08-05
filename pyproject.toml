@@ -7,6 +7,24 @@ version = "0.1.0"
 description = "Semantic movie & TV recommender built with RAG (Gemini + Qdrant)."
 requires-python = ">=3.12"
 
+[tool.ruff]
+# Slightly wider than the default 88: this codebase explains itself in comments, and
+# wrapping a sentence twice costs more readability than the extra columns.
+line-length = 100
+extend-exclude = [".venv", "qdrant_storage", "data"]
+
+[tool.ruff.lint]
+# E/F  pycodestyle + pyflakes (the basics: syntax, unused names, style)
+# I    import sorting -- keeps diffs free of import churn
+# UP   pyupgrade: use modern Python idioms (we target 3.12)
+# B    bugbear: real bug patterns, e.g. mutable default arguments
+# C4   comprehension clean-ups
+# RUF  ruff's own checks, e.g. unused noqa directives
+# Deliberately NOT enabled: BLE (blind except). We catch bare `Exception` in exactly two
+# places -- the UI's error banner and the integration-test skip guard -- where the point
+# IS to survive any failure, and a silenced-warning comment on each would add noise.
+select = ["E", "F", "I", "UP", "B", "C4", "RUF"]
+
 [tool.pytest.ini_options]
 # Look for tests here by default, so a bare `pytest` finds them.
 testpaths = ["tests"]

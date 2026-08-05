@@ -1,0 +1,37 @@
+# Runs the linter and the fast test suite on every push and pull request.
+#
+# Note what is NOT here: no API keys, no secrets, no Qdrant service container. The whole
+# default suite is pure -- dependencies are injected, live services are opt-in behind the
+# `integration` marker -- so CI needs nothing but Python. That is the payoff of the design
+# decisions in the test files, and this workflow is the proof.
+#
+# The integration tests (`pytest -m integration`) stay a local, manual step on purpose:
+# they spend Gemini quota, and quota does not belong on a pipeline that runs per commit.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: pytest

@@ -22,19 +22,19 @@ def make_title():
     """
 
     def _make(**overrides) -> Title:
-        defaults = dict(
-            tmdb_id=550,
-            media_type="movie",
-            title="Fight Club",
-            overview="An insomniac office worker forms an underground fight club.",
-            original_language="en",
-            genres=["Drama", "Thriller"],
-            release_year=1999,
-            popularity=61.4,
-            vote_average=8.4,
-            vote_count=27000,
-            poster_path="/poster.jpg",
-        )
+        defaults = {
+            "tmdb_id": 550,
+            "media_type": "movie",
+            "title": "Fight Club",
+            "overview": "An insomniac office worker forms an underground fight club.",
+            "original_language": "en",
+            "genres": ["Drama", "Thriller"],
+            "release_year": 1999,
+            "popularity": 61.4,
+            "vote_average": 8.4,
+            "vote_count": 27000,
+            "poster_path": "/poster.jpg",
+        }
         return Title(**{**defaults, **overrides})
 
     return _make

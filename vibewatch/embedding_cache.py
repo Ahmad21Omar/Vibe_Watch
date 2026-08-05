@@ -23,7 +23,7 @@ def text_hash(model: str, task_type: str, text: str) -> str:
     different cache entry. The \\x00 separators stop "a" + "bc" from colliding with
     "ab" + "c".
     """
-    raw = f"{model}\x00{task_type}\x00{text}".encode("utf-8")
+    raw = f"{model}\x00{task_type}\x00{text}".encode()
     return hashlib.sha256(raw).hexdigest()
 
 

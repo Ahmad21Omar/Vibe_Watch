@@ -17,8 +17,8 @@ import pytest
 
 pytest.importorskip("streamlit")
 
-import streamlit as st  # noqa: E402
-from streamlit.testing.v1 import AppTest  # noqa: E402
+import streamlit as st
+from streamlit.testing.v1 import AppTest
 
 APP = "app.py"
 

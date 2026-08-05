@@ -1,5 +1,8 @@
 # 🎬 Vibewatch
 
+[![tests](https://github.com/Ahmad21Omar/Vibe_Watch/actions/workflows/tests.yml/badge.svg)](https://github.com/Ahmad21Omar/Vibe_Watch/actions/workflows/tests.yml)
+[![python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
+
 **A semantic recommendation system for movies & TV shows.**
 Instead of searching by keywords, the user describes a *mood or theme* in natural
 language (e.g. *"Survival, people fighting to stay alive"*), and Vibewatch finds the
