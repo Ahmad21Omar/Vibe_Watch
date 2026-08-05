@@ -1,0 +1,22 @@
+# Keep the build context small and free of secrets.
+# Everything here is either huge, regenerated, or must never end up in an image.
+
+# Secrets -- the container gets its keys from the environment at RUN time, never baked in.
+.env
+
+# Large or regenerated
+.venv/
+qdrant_storage/
+data/
+.git/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+
+# Private notes (also git-ignored)
+notes/
+
+# Not needed to run the app
+tests/
+eval/
+.github/

@@ -1,7 +1,10 @@
-# Runs Qdrant (our vector database) as a Docker container.
-# Start:  docker compose up -d      (in the background)
-# Stop:   docker compose down
-# Web UI: http://localhost:6333/dashboard
+# The whole application: the Streamlit UI plus the Qdrant vector database.
+#
+# Start everything:  docker compose up -d --build   ->  UI at http://localhost:8501
+# Only the database: docker compose up -d qdrant    ->  what the local dev setup needs
+# Stop:              docker compose down
+#
+# Qdrant's dashboard stays available at http://localhost:6333/dashboard either way.
 
 services:
   qdrant:
@@ -13,4 +16,19 @@ services:
     volumes:
       # Persist the vectors on disk so they survive a container restart.
       - ./qdrant_storage:/qdrant/storage
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: vibewatch-app
+    ports:
+      - "8501:8501"
+    # Keys come from .env at RUN time -- never copied into the image (see .dockerignore).
+    env_file: .env
+    environment:
+      # Overrides whatever .env says: inside the compose network the database is reachable
+      # under its SERVICE NAME, not localhost -- localhost in a container is the container.
+      QDRANT_URL: http://qdrant:6333
+    depends_on:
+      - qdrant
     restart: unless-stopped
