@@ -91,26 +91,42 @@ python -m scripts.evaluate_retrieval                    # how good is retrieval?
 
 ---
 
-## 🚀 Setup (local)
+## 🚀 Setup
 
-**Prerequisites:** Python 3.12+, Docker Desktop.
+**Prerequisites:** Docker Desktop (and Python 3.12+ for the local dev setup).
 
 ```bash
-# 1. Enter the repo folder and create a virtual environment
-python -m venv .venv
-.\.venv\Scripts\activate        # Windows (PowerShell)
+cp .env.example .env      # then add your TMDB_API_KEY and GEMINI_API_KEY
+```
 
-# 2. Install dependencies
+Both keys are free: [TMDb](https://www.themoviedb.org/settings/api) ·
+[Gemini](https://aistudio.google.com/apikey).
+
+### Run it with Docker
+
+```bash
+docker compose up -d --build     # UI at http://localhost:8501
+```
+
+The index needs to be built once (see [Data pipeline](#-data-pipeline) below); until then
+the app starts but finds nothing.
+
+### Develop locally
+
+```bash
+python -m venv .venv
+.\.venv\Scripts\activate         # Windows (PowerShell)
 pip install -r requirements.txt
 
-# 3. Configuration: copy .env.example and fill in your keys
-copy .env.example .env          # Windows
-#   -> set TMDB_API_KEY and GEMINI_API_KEY in .env
-
-# 4. Start the vector DB (Qdrant)
-docker compose up -d
-#   -> web dashboard: http://localhost:6333/dashboard
+docker compose up -d qdrant      # just the database -- dashboard at :6333/dashboard
+pytest                           # 90 tests, no keys and no services required
+streamlit run app.py
 ```
+
+**The test suite deliberately needs no secrets.** API keys are optional at import and
+only required at the point of use, so `git clone && pytest` is green on a machine that
+has never seen an API key — which is also why [CI](.github/workflows/tests.yml) runs
+without a single credential.
 
 ---
 
@@ -121,6 +137,7 @@ Vibewatch/
 ├── app.py               # Streamlit UI: mood in, recommendation + sources out
 ├── vibewatch/           # Python package with the actual code
 │   ├── config.py        # central, type-safe configuration
+│   ├── gemini.py        # shared retry policy for the Gemini API (429 / 5xx)
 │   ├── models.py        # Title: our unified movie/TV data model
 │   ├── tmdb.py          # thin TMDb API client
 │   ├── embeddings.py    # text -> vector via Gemini (batched, rate-limited, resumable)
@@ -139,9 +156,11 @@ Vibewatch/
 │   └── gold_queries.json  # hand-labelled queries for retrieval evaluation
 ├── tests/               # fast unit tests + opt-in live integration tests
 ├── data/                # locally cached TMDb data (git-ignored)
+├── .github/workflows/   # CI: lint + tests on every push (no secrets needed)
 ├── .env.example         # template for API keys
 ├── requirements.txt     # Python dependencies (grouped by step)
-├── docker-compose.yml   # Qdrant vector DB
+├── Dockerfile           # image for the Streamlit app
+├── docker-compose.yml   # the whole stack: app + Qdrant
 └── README.md
 ```
 
@@ -150,8 +169,9 @@ Vibewatch/
 ## 🧪 Tests
 
 ```bash
-pytest                  # 78 fast, pure unit tests -- no API, no Docker, no quota
+pytest                  # 90 fast, pure unit tests -- no API, no Docker, no quota
 pytest -m integration   # 5 end-to-end tests against live Qdrant + Gemini (opt-in)
+ruff check .            # lint (same command CI runs)
 ```
 
 The default suite covers the places where a silent bug would quietly corrupt everything
@@ -326,3 +346,9 @@ catalogue at all and two that were simply wrong. A metric's first job is to be d
 recommendation stays faithful to its sources is currently only covered by an
 integration test asserting the answer names a retrieved title. Faithfulness and answer
 relevancy (RAGAS, or a small LLM-as-judge over the same gold set) are the next step.
+
+---
+
+## 📄 License
+
+MIT — see [LICENSE](LICENSE).
