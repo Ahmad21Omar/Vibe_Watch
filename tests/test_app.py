@@ -13,6 +13,8 @@ The logic worth testing is the part that quietly changes what the user gets:
   a search the user did not ask for, and look perfectly fine doing it.
 """
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("streamlit")
@@ -20,7 +22,11 @@ pytest.importorskip("streamlit")
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
-APP = "app.py"
+# Absolute, derived from this file's location. A bare "app.py" is resolved against the
+# CALLING file in current Streamlit, i.e. tests/app.py -- which does not exist. (Older
+# versions resolved against the working directory, so the relative form passed locally and
+# failed in CI. Deriving the path removes the dependency on both cwd and library version.)
+APP = str(Path(__file__).parent.parent / "app.py")
 
 
 def _hit(title="The Road", **overrides):
