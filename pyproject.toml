@@ -28,6 +28,13 @@ select = ["E", "F", "I", "UP", "B", "C4", "RUF"]
 [tool.pytest.ini_options]
 # Look for tests here by default, so a bare `pytest` finds them.
 testpaths = ["tests"]
+# Put the project root on sys.path so `from vibewatch... import ...` resolves.
+# NOT redundant: `python -m pytest` adds the current directory to sys.path automatically,
+# but the `pytest` command does not -- so without this line the suite passes locally and
+# fails in CI with "No module named 'vibewatch'". (It did exactly that.) The alternative
+# is packaging the project and installing it with `pip install -e .`; this is the smaller
+# change and keeps `git clone && pytest` working with no install step.
+pythonpath = ["."]
 # -q = quiet output; -ra = short summary of anything not passing.
 # -m 'not integration' keeps a bare `pytest` fast and pure: integration tests hit live
 # Qdrant + Gemini and are opt-in via `pytest -m integration`.
