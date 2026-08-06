@@ -84,15 +84,14 @@ The query flow (4 → 5) is orchestrated with **LangGraph** and evaluated with *
 - [x] **Step 3 — Embeddings & indexing:** vectorize descriptions, store in Qdrant
 - [x] **Step 4 — Retrieval:** semantic search with metadata filters
 - [x] **Step 5 — Generation & orchestration:** LangGraph flow + LLM reasoning
-- [ ] **Step 6 — Frontend & evaluation:** Streamlit UI ✅ · retrieval metrics ✅ ·
-      generation metrics (faithfulness) and Docker deployment still open
-
-The pipeline is end-to-end usable today:
+- [x] **Step 6 — Frontend & evaluation:** Streamlit UI, retrieval + faithfulness metrics,
+      Docker deployment
 
 ```bash
-streamlit run app.py                                    # the UI
+docker compose up -d --build                              # the UI, on :8501
 python -m scripts.recommend "dark survival" --type movie  # the same thing, from the CLI
-python -m scripts.evaluate_retrieval                    # how good is retrieval?
+python -m scripts.evaluate_retrieval                      # how good is retrieval?
+python -m scripts.evaluate_generation                     # is the answer faithful?
 ```
 
 ---
@@ -125,7 +124,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 docker compose up -d qdrant      # just the database -- dashboard at :6333/dashboard
-pytest                           # 90 tests, no keys and no services required
+pytest                           # 96 tests, no keys and no services required
 streamlit run app.py
 ```
 
@@ -152,12 +151,14 @@ Vibewatch/
 │   ├── retrieval.py     # query -> ranked, grounded titles (the retrieval seam)
 │   ├── generation.py    # prompt building + grounded LLM recommendation
 │   ├── graph.py         # LangGraph flow: retrieve -> generate (+ retry)
-│   └── evaluation.py    # retrieval metrics: recall@k, MRR
+│   ├── evaluation.py    # retrieval metrics: recall@k, MRR
+│   └── judge.py         # LLM-as-judge: is the answer faithful to its sources?
 ├── scripts/
 │   ├── fetch_titles.py  # offline ingestion: TMDb -> data/titles.json
 │   ├── index_titles.py  # offline indexing: embed -> Qdrant
 │   ├── recommend.py     # online: ask for a recommendation from the CLI
-│   └── evaluate_retrieval.py  # measure retrieval against the gold set
+│   ├── evaluate_retrieval.py   # measure retrieval against the gold set
+│   └── evaluate_generation.py  # measure faithfulness of the answers
 ├── eval/
 │   └── gold_queries.json  # hand-labelled queries for retrieval evaluation
 ├── tests/               # fast unit tests + opt-in live integration tests
@@ -176,8 +177,8 @@ Vibewatch/
 ## 🧪 Tests
 
 ```bash
-pytest                  # 90 fast, pure unit tests -- no API, no Docker, no quota
-pytest -m integration   # 5 end-to-end tests against live Qdrant + Gemini (opt-in)
+pytest                  # 96 fast, pure unit tests -- no API, no Docker, no quota
+pytest -m integration   # 7 end-to-end tests against live Qdrant + Gemini (opt-in)
 ruff check .            # lint (same command CI runs)
 ```
 
@@ -349,10 +350,38 @@ fiction that plays with reality"* scored **recall 0.00** — while returning *Bl
 excellent; the labels were incomplete. The same run caught two labels that are not in the
 catalogue at all and two that were simply wrong. A metric's first job is to be debugged.
 
-**Still open:** generation-side metrics. Retrieval is measured; whether the written
-recommendation stays faithful to its sources is currently only covered by an
-integration test asserting the answer names a retrieved title. Faithfulness and answer
-relevancy (RAGAS, or a small LLM-as-judge over the same gold set) are the next step.
+### Is the answer faithful to its sources?
+
+```bash
+python -m scripts.evaluate_generation          # 4 queries
+python -m scripts.evaluate_generation --json   # every claim and verdict
+```
+
+Retrieval can be scored against labels; a written paragraph cannot — there is no single
+correct answer. So generation is judged instead, by an LLM, using the standard
+decomposition: **break the answer into atomic claims → check each one against the context
+alone → faithfulness = supported / total.** A claim that is true in the real world but
+absent from the context counts as *unsupported*: the recommender was not allowed to know
+it. Current score: **1.00** over four queries.
+
+**But a judge that always says "looks fine" is worse than no judge**, so the instrument is
+tested too. Fed a deliberately hallucinated answer, it must object — and does, catching
+three different failure modes:
+
+| Planted claim | Verdict |
+|---|---|
+| *Titanic (1997)* — a title that was never retrieved | rejected |
+| *The Martian stars Matt Damon* — true in reality, absent from the context | rejected |
+| *The Martian won four Oscars* — simply false | rejected |
+
+Score: **0.00**. That case is pinned as an integration test; if it ever starts passing,
+every other faithfulness number in the project becomes meaningless.
+
+Hand-rolled rather than RAGAS on purpose: ~80 lines against one API call, the prompt stays
+visible and tunable, and it avoids pulling a large LangChain dependency into a project
+that talks to Gemini directly. The trade-off is honest — RAGAS is better validated and
+offers more metrics; this is enough to catch a regression. And the judge is itself an LLM,
+so the score is a comparable signal, not truth.
 
 ---
 
