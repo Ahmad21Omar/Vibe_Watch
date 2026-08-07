@@ -57,7 +57,8 @@ retrieved evidence lets anyone check the answer against its sources.
                                (Streamlit frontend)
 ```
 
-The query flow (4 → 5) is orchestrated with **LangGraph** and evaluated with **RAGAS**.
+The query flow (4 → 5) is orchestrated with **LangGraph**, and both halves are measured:
+retrieval against hand-labelled queries, generation by an LLM-as-judge.
 
 ---
 
@@ -65,13 +66,13 @@ The query flow (4 → 5) is orchestrated with **LangGraph** and evaluated with *
 
 | Component | Technology | Why |
 |-----------|-------------|-----|
-| Language / backend | Python, FastAPI | Standard for AI engineering, fast APIs |
+| Language | Python 3.12 | Standard for AI engineering |
 | Data source | TMDb API | Movies & TV shows, multilingual descriptions, free |
 | Embeddings | Gemini `gemini-embedding-001` | Strong semantic quality, free tier, no local storage cost |
-| Vector DB | Qdrant (Docker) | Fast similarity search + metadata filters |
+| Vector DB | Qdrant (Docker) | Fast similarity search, metadata filters, sparse vectors |
 | Orchestration | LangGraph | Clear, traceable RAG flow modeled as a graph |
 | Generation | Gemini | Grounded recommendation in natural language |
-| Evaluation | RAGAS | Measurable retrieval quality |
+| Evaluation | hand-labelled gold set + LLM-as-judge | Measurable retrieval *and* generation quality |
 | Frontend | Streamlit | Fast UI to try things out |
 | Deployment | Docker | Reproducible, runs anywhere |
 
@@ -124,7 +125,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 docker compose up -d qdrant      # just the database -- dashboard at :6333/dashboard
-pytest                           # 96 tests, no keys and no services required
+pytest                           # 114 tests, no keys and no services required
 streamlit run app.py
 ```
 
@@ -143,6 +144,7 @@ Vibewatch/
 ├── vibewatch/           # Python package with the actual code
 │   ├── config.py        # central, type-safe configuration
 │   ├── gemini.py        # shared retry policy for the Gemini API (429 / 5xx)
+│   ├── bm25.py          # BM25 sparse vectors (the keyword half of hybrid search)
 │   ├── models.py        # Title: our unified movie/TV data model
 │   ├── tmdb.py          # thin TMDb API client
 │   ├── embeddings.py    # text -> vector via Gemini (batched, rate-limited, resumable)
@@ -177,7 +179,7 @@ Vibewatch/
 ## 🧪 Tests
 
 ```bash
-pytest                  # 96 fast, pure unit tests -- no API, no Docker, no quota
+pytest                  # 114 fast, pure unit tests -- no API, no Docker, no quota
 pytest -m integration   # 7 end-to-end tests against live Qdrant + Gemini (opt-in)
 ruff check .            # lint (same command CI runs)
 ```
@@ -283,6 +285,34 @@ alternative — search top-5, then discard what does not match — would return 
 where the catalogue holds two hundred matching films. That is the kind of bug that never
 looks broken in production; it just quietly answers worse.
 
+### Hybrid search: built, measured, and *not* shipped as the default
+
+Every RAG guide recommends combining semantic search with BM25 keyword search. So it was
+built — a from-scratch BM25 implementation (`vibewatch/bm25.py`, no extra dependency),
+stored as Qdrant sparse vectors, fused with the dense results via **Reciprocal Rank
+Fusion**. Then it was evaluated against the gold set, on an identical index:
+
+| Mode | recall@5 | MRR |
+|---|---|---|
+| **dense** (semantic only) | **0.832** | **0.917** |
+| hybrid (dense + BM25, RRF) | 0.557 | 0.715 |
+
+**Hybrid was substantially worse, so it is not the default.** Two reasons, both specific
+to this project and both worth knowing before reaching for the standard recipe:
+
+1. **The queries are moods, not keywords.** *"Epic fantasy quest with swords and magic"*
+   contains no rare term for BM25 to latch onto, so it matches generic words instead —
+   "story" surfaces *Crazy Story*. RRF fuses by **rank**, so the top of a useless keyword
+   list carries the same weight as the top of a good semantic one and displaces it.
+2. **The lexical case was already covered.** `embedding_text()` embeds the *title* along
+   with the plot, so the dense vectors handle proper nouns on their own — verified query
+   by query: *Frieren*, *Nosferatu*, *Tarantino* all rank first without BM25.
+
+The code stays in the repo, tested and runnable (`--mode hybrid`), because the comparison
+is the deliverable — and because a larger corpus or plot-only embeddings would flip the
+answer. **The point is not that hybrid search is bad. It is that the gold set answered a
+question that intuition got wrong.**
+
 ---
 
 ## ✍️ Generation & orchestration
@@ -319,8 +349,9 @@ the user, because silently ignoring what someone asked for is worse than showing
 ## 📊 Evaluation
 
 ```bash
-python -m scripts.evaluate_retrieval             # 12 labelled queries, one embedding each
-python -m scripts.evaluate_retrieval --verbose   # ...and what came back for each
+python -m scripts.evaluate_retrieval                  # 12 labelled queries, one embedding each
+python -m scripts.evaluate_retrieval --verbose        # ...and what came back for each
+python -m scripts.evaluate_retrieval --mode hybrid    # compare against hybrid search
 ```
 
 Everything above measures whether the pipeline is **correct**. This measures whether it is
