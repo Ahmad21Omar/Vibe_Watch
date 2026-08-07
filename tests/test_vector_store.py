@@ -7,7 +7,12 @@ If either breaks, we silently get duplicate or overwritten titles in Qdrant.
 
 import uuid
 
-from vibewatch.vector_store import point_id
+from vibewatch.vector_store import (
+    DENSE_VECTOR,
+    SPARSE_VECTOR,
+    index_titles,
+    point_id,
+)
 
 
 def test_point_id_is_deterministic(make_title):
@@ -37,3 +42,32 @@ def test_point_id_ignores_non_identifying_fields(make_title):
     a = point_id(make_title(overview="old", vote_average=1.0))
     b = point_id(make_title(overview="new", vote_average=9.0))
     assert a == b
+
+
+# --- writing points: both vectors must arrive ------------------------------------------
+
+
+class _RecordingUpsertClient:
+    def __init__(self):
+        self.points = []
+
+    def upsert(self, collection_name, points):
+        self.points.extend(points)
+
+
+def test_index_titles_writes_both_vectors_and_the_payload(make_title):
+    # Hybrid search only works if BOTH vectors are stored under the names the query uses.
+    # Writing only the dense one would leave sparse search matching nothing -- and the
+    # hybrid query would still succeed, just silently ranked by the dense half alone.
+    client = _RecordingUpsertClient()
+    title = make_title()
+
+    index_titles(client, [title], [[0.1, 0.2, 0.3]], [{7: 1.5, 9: 0.5}])
+
+    (point,) = client.points
+    assert point.vector[DENSE_VECTOR] == [0.1, 0.2, 0.3]
+    assert point.vector[SPARSE_VECTOR].indices == [7, 9]
+    assert point.vector[SPARSE_VECTOR].values == [1.5, 0.5]
+    # The payload is what makes a hit self-contained -- no second lookup to show a result.
+    assert point.payload["title"] == title.title
+    assert point.id == point_id(title)

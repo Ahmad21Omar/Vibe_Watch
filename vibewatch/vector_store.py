@@ -19,18 +19,30 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    Fusion,
+    FusionQuery,
     MatchAny,
     MatchValue,
     PointStruct,
+    Prefetch,
     Range,
+    SparseIndexParams,
+    SparseVector,
+    SparseVectorParams,
     VectorParams,
 )
 
+from vibewatch.bm25 import query_vector as bm25_query_vector
 from vibewatch.config import settings
 from vibewatch.embeddings import VECTOR_SIZE
 from vibewatch.models import Title
 
 COLLECTION_NAME = "titles"
+
+# Each point carries TWO vectors, so they need names. Dense = meaning (Gemini embedding),
+# sparse = words (BM25). Naming them is what lets one query ask both and fuse the answers.
+DENSE_VECTOR = "dense"
+SPARSE_VECTOR = "sparse"
 
 # How many points we send to Qdrant per request.
 UPSERT_BATCH_SIZE = 100
@@ -68,7 +80,11 @@ def create_collection(client: QdrantClient) -> None:
 
     client.create_collection(
         collection_name=COLLECTION_NAME,
-        vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+        # Named configs, one per vector kind. The dense side keeps cosine distance; the
+        # sparse side needs no metric at all -- sparse scoring IS the dot product, which
+        # is exactly what makes our BM25 weights come out as BM25 scores.
+        vectors_config={DENSE_VECTOR: VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE)},
+        sparse_vectors_config={SPARSE_VECTOR: SparseVectorParams(index=SparseIndexParams())},
     )
 
     # Payload indexes make metadata filters fast. Without them Qdrant would have to
@@ -87,19 +103,30 @@ def create_collection(client: QdrantClient) -> None:
         )
 
 
-def index_titles(client: QdrantClient, titles: list[Title], vectors: list[list[float]]) -> None:
-    """Write titles + their vectors into Qdrant."""
+def index_titles(
+    client: QdrantClient,
+    titles: list[Title],
+    vectors: list[list[float]],
+    sparse_vectors: list[dict[int, float]],
+) -> None:
+    """Write titles plus both of their vectors into Qdrant."""
     points = [
         PointStruct(
             id=point_id(title),
-            vector=vector,
+            vector={
+                DENSE_VECTOR: vector,
+                # Qdrant wants the sparse vector split into parallel index/value lists.
+                SPARSE_VECTOR: SparseVector(
+                    indices=list(sparse.keys()), values=list(sparse.values())
+                ),
+            },
             # The payload travels with the vector. We store everything we need to
             # filter on AND everything we want to show the user, so a search hit is
             # self-contained -- no second lookup in another database.
             payload=title.model_dump(),
         )
-        # zip() walks both lists in lockstep: (title_0, vector_0), (title_1, vector_1)...
-        for title, vector in zip(titles, vectors, strict=True)
+        # zip() walks the lists in lockstep: (title_0, vector_0, sparse_0), ...
+        for title, vector, sparse in zip(titles, vectors, sparse_vectors, strict=True)
     ]
 
     for start in range(0, len(points), UPSERT_BATCH_SIZE):
@@ -222,8 +249,70 @@ def search(
     response = client.query_points(
         collection_name=COLLECTION_NAME,
         query=query_vector,
+        using=DENSE_VECTOR,  # required now that a point carries more than one vector
         limit=limit,
         with_payload=True,
         query_filter=query_filter,
     )
+    return [{"score": point.score, **point.payload} for point in response.points]
+
+
+# How many candidates each half retrieves before fusion. Fusion can only reorder what it
+# is given, so this must be comfortably larger than `limit` -- otherwise a title ranked
+# 6th by both halves (a strong consensus candidate) never reaches the fusion step at all.
+PREFETCH_MULTIPLIER = 4
+MIN_PREFETCH = 20
+
+
+def hybrid_search(
+    client: QdrantClient,
+    query_vector: list[float],
+    query_text: str,
+    limit: int = 5,
+    **filters,
+) -> list[dict]:
+    """Search semantically AND lexically, then fuse the two rankings with RRF.
+
+    Dense finds what the query *means*, sparse finds what it *says*. Fusing them fixes the
+    blind spot each one has alone: a query naming a specific title ("something like
+    Inception") is a lexical question that a 3072-dimensional average of meaning answers
+    only vaguely, while a pure mood ("dark, hopeless") has no keywords to match at all.
+
+    RECIPROCAL RANK FUSION, and why it is the right fuser here:
+    each result contributes 1/(k + rank) from each list it appears in. It uses only
+    POSITIONS, never the raw scores -- which matters because our two scores are not
+    comparable in any way: cosine similarity lives in [-1, 1] and clusters tightly, BM25
+    is unbounded and depends on corpus statistics. Any weighted sum of the two would need
+    a normalisation constant that is really just a hyperparameter in disguise. RRF needs
+    none, and a title that both halves rank highly wins on agreement.
+
+    The filters apply to BOTH branches: a hard constraint that only narrowed one half
+    would leak excluded titles back in through the other.
+    """
+    query_filter = _build_filter(**filters)
+    prefetch_limit = max(limit * PREFETCH_MULTIPLIER, MIN_PREFETCH)
+    sparse = bm25_query_vector(query_text)
+
+    response = client.query_points(
+        collection_name=COLLECTION_NAME,
+        prefetch=[
+            Prefetch(
+                query=query_vector,
+                using=DENSE_VECTOR,
+                limit=prefetch_limit,
+                filter=query_filter,
+            ),
+            Prefetch(
+                query=SparseVector(indices=list(sparse.keys()), values=list(sparse.values())),
+                using=SPARSE_VECTOR,
+                limit=prefetch_limit,
+                filter=query_filter,
+            ),
+        ],
+        query=FusionQuery(fusion=Fusion.RRF),
+        limit=limit,
+        with_payload=True,
+    )
+    # NOTE: `score` here is the RRF score (small, e.g. ~0.03), not cosine similarity.
+    # It ranks correctly but is not a similarity -- do not present it as one.
     return [{"score": point.score, **point.payload} for point in response.points]

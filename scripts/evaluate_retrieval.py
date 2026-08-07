@@ -31,6 +31,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate retrieval against gold labels.")
     parser.add_argument("--k", type=int, default=5, help="how many titles to retrieve")
     parser.add_argument(
+        "--mode",
+        choices=["hybrid", "dense"],
+        default="hybrid",
+        help="hybrid = semantic + BM25 fused with RRF; dense = semantic only (the baseline)",
+    )
+    parser.add_argument(
         "--verbose", action="store_true", help="print the retrieved titles per query"
     )
     return parser.parse_args()
@@ -53,11 +59,14 @@ def main() -> None:
             print(f"  - {title}")
         print()
 
-    print(f"Evaluating {len(gold)} queries at k={args.k} (one embedding call each)...\n")
+    print(
+        f"Evaluating {len(gold)} queries at k={args.k}, mode={args.mode} "
+        "(one embedding call each)...\n"
+    )
 
     results: list[tuple[list[str], list[str]]] = []
     for case in gold:
-        hits = retrieve(case["query"], limit=args.k)
+        hits = retrieve(case["query"], limit=args.k, mode=args.mode)
         retrieved = [hit["title"] for hit in hits]
         relevant = case["relevant"]
         results.append((retrieved, relevant))
@@ -82,7 +91,8 @@ def main() -> None:
         min(args.k, len(case["relevant"])) / len(case["relevant"]) for case in gold
     )
 
-    print(f"\n  queries      {report['queries']}")
+    print(f"\n  mode         {args.mode}")
+    print(f"  queries      {report['queries']}")
     print(f"  recall@{args.k}     {report[f'recall@{args.k}']:.3f}  (max possible {ceiling:.3f})")
     print(f"  MRR          {report['mrr']:.3f}")
 
