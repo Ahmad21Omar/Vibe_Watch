@@ -6,7 +6,26 @@ reaches retrieval, that retrieval's hits reach generation, that the final state 
 both -- without Qdrant, Gemini, or a single token of quota.
 """
 
-from vibewatch.graph import build_graph
+from vibewatch.graph import build_graph as _real_build_graph
+from vibewatch.query_understanding import QueryIntent
+
+
+def _passthrough_understand(query, genres=None):
+    """Understanding that extracts nothing -- the mood is the whole query."""
+    return QueryIntent(search_text=query)
+
+
+def build_graph(**kwargs):
+    """Compile the real graph with every external boundary faked by default.
+
+    Understanding, retrieval and generation all reach out to Qdrant or Gemini in
+    production. A unit test that forgets one of them does not fail -- it HANGS, waiting on
+    a socket. Defaulting them here means a new test cannot make that mistake.
+    """
+    kwargs.setdefault("understand_fn", _passthrough_understand)
+    kwargs.setdefault("genres_fn", lambda: ["Drama", "Comedy"])
+    kwargs.setdefault("generate_fn", lambda query, hits: "ok")
+    return _real_build_graph(**kwargs)
 
 
 def _fake_retrieve(hits, log=None):
@@ -158,3 +177,107 @@ def test_retry_that_still_finds_nothing_stops_after_one_relax():
     # One filtered attempt + one relaxed attempt, then stop -- never a third.
     assert len(log) == 2
     assert state["answer"] == "nothing found"
+
+
+# --- the understanding node -------------------------------------------------------------
+
+
+def _understanding(search_text, **filters):
+    """An extractor that always returns the given intent, ignoring the query."""
+    return lambda query, genres=None: QueryIntent(search_text=search_text, **filters)
+
+
+def test_understood_filters_reach_retrieval():
+    # The whole point of the node: words the user typed become real Qdrant filters.
+    log = []
+    build_graph(
+        retrieve_fn=_fake_retrieve([{"title": "x"}], log=log),
+        understand_fn=_understanding("funny", media_type="movie", release_year_max=1999),
+    ).invoke({"query": "funny movies from before 2000"})
+
+    assert log[0]["media_type"] == "movie"
+    assert log[0]["release_year_max"] == 1999
+
+
+def test_retrieval_searches_the_mood_not_the_whole_sentence():
+    # The constraint words must NOT be embedded: "movies from before 2000" would drag the
+    # vector towards titles ABOUT the year 2000 instead of titles FROM it.
+    log = []
+    build_graph(
+        retrieve_fn=_fake_retrieve([{"title": "x"}], log=log),
+        understand_fn=_understanding("funny", media_type="movie"),
+    ).invoke({"query": "funny movies from before 2000"})
+
+    assert log[0]["query"] == "funny"
+
+
+def test_explicit_filters_override_inferred_ones():
+    # A sidebar click is a deliberate choice; the inference is our guess about their
+    # words. Letting the guess win is how a UI starts feeling possessed.
+    log = []
+    build_graph(
+        retrieve_fn=_fake_retrieve([{"title": "x"}], log=log),
+        understand_fn=_understanding("revenge", media_type="tv"),
+    ).invoke({"query": "series about revenge", "filters": {"media_type": "movie"}})
+
+    assert log[0]["media_type"] == "movie"
+
+
+def test_inferred_filters_are_exposed_for_the_ui():
+    # A filter the system inferred but never showed is indistinguishable from a bug to
+    # the person wondering where half the catalogue went.
+    state = build_graph(
+        retrieve_fn=_fake_retrieve([{"title": "x"}]),
+        understand_fn=_understanding("funny", media_type="movie"),
+    ).invoke({"query": "funny movies"})
+
+    assert state["inferred_filters"] == {"media_type": "movie"}
+    assert state["search_text"] == "funny"
+
+
+def test_generation_still_answers_the_original_question():
+    # Retrieval searches the stripped mood, but the ANSWER must address what was asked --
+    # "funny" alone would produce a reply that ignores the year and the media type.
+    seen = {}
+
+    def spy_generate(query, hits):
+        seen["query"] = query
+        return "ok"
+
+    build_graph(
+        retrieve_fn=_fake_retrieve([{"title": "x"}]),
+        generate_fn=spy_generate,
+        understand_fn=_understanding("funny", media_type="movie"),
+    ).invoke({"query": "funny movies from before 2000"})
+
+    assert seen["query"] == "funny movies from before 2000"
+
+
+def test_a_failing_understanding_step_does_not_take_the_query_down():
+    # Understanding is a convenience layer sitting in front of EVERY search. If it can
+    # raise, it can break the whole app -- so a failure must degrade to plain search.
+    log = []
+
+    def boom(query, genres=None):
+        raise ConnectionError("Gemini down")
+
+    state = build_graph(
+        retrieve_fn=_fake_retrieve([{"title": "x"}], log=log), understand_fn=boom
+    ).invoke({"query": "funny movies"})
+
+    assert log[0]["query"] == "funny movies"  # the sentence as typed
+    assert state["inferred_filters"] == {}
+
+
+def test_an_unreachable_genre_vocabulary_does_not_take_the_query_down():
+    # Fetching the genre list hits Qdrant. That call failing must not cost us the query.
+    log = []
+
+    def boom():
+        raise ConnectionError("Qdrant down")
+
+    build_graph(
+        retrieve_fn=_fake_retrieve([{"title": "x"}], log=log), genres_fn=boom
+    ).invoke({"query": "funny movies"})
+
+    assert log[0]["query"] == "funny movies"

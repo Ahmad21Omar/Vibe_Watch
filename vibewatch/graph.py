@@ -1,23 +1,26 @@
-"""The LangGraph flow that ties retrieval and generation into one pipeline.
+"""The LangGraph flow that ties understanding, retrieval and generation into one pipeline.
 
-                    hits found
-    query --> [retrieve] ------> [generate] --> answer
-                  ^   |
-                  |   | nothing found, but filters were set
-                  |   v
-              [relax_filters]
+                                    hits found
+    query --> [understand] --> [retrieve] ------> [generate] --> answer
+                                   ^   |
+                                   |   | nothing found, but filters were set
+                                   |   v
+                               [relax_filters]
 
-Honest framing, because this is the question an interviewer will ask: two sequential steps
-alone would not justify a graph -- `generate_recommendation(query, retrieve(query))` does
-that in one line. The retry loop is where it starts paying off: the route out of `retrieve`
-depends on its RESULT, and expressing that as a conditional edge keeps each node a small
-pure function instead of growing an if/else pyramid inside one procedure. What follows
-later rides on the same structure:
+Honest framing, because this is the question an interviewer will ask: a straight line of
+steps alone would not justify a graph -- nested function calls do that in one line. Two
+things here earn it:
 
-- extra nodes -- query understanding, re-ranking, a guard that checks the answer only
-  names retrieved titles
-- state that every node reads and extends, instead of threading arguments through calls
-- streaming, checkpointing and per-node tracing that come for free once the flow is a graph
+- **The conditional edge.** The route out of `retrieve` depends on its RESULT, and
+  expressing that as an edge keeps each node a small pure function instead of growing an
+  if/else pyramid inside one procedure.
+- **The shared state.** `understand` writes `search_text` and `filters`; `retrieve` reads
+  them without knowing who produced them; `relax_filters` rewrites `filters` and sends the
+  flow back. Threading that through call arguments would mean every node signature changes
+  whenever a new one is inserted.
+
+What follows later rides on the same structure: re-ranking, a guard that checks the answer
+only names retrieved titles, streaming, checkpointing, per-node tracing.
 
 The state is the contract between nodes: each node receives the whole dict and returns
 ONLY the keys it wants to change, which LangGraph merges in. That is what keeps the nodes
@@ -28,14 +31,27 @@ fake retrieval/generation: the wiring gets verified, no Docker and no API key in
 """
 
 from collections.abc import Callable
+from functools import lru_cache
 from typing import NotRequired, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from vibewatch.generation import generate_recommendation
+from vibewatch.query_understanding import QueryIntent, understand
 from vibewatch.retrieval import retrieve
+from vibewatch.vector_store import available_genres, get_client
 
 DEFAULT_LIMIT = 5
+
+
+@lru_cache(maxsize=1)
+def catalogue_genres() -> list[str]:
+    """The genre vocabulary handed to query understanding.
+
+    Cached for the process: the list only changes when the catalogue is re-indexed, and
+    fetching it per query would add a Qdrant round trip to every single request.
+    """
+    return available_genres(get_client())
 
 
 class RecommendationState(TypedDict):
@@ -56,18 +72,50 @@ class RecommendationState(TypedDict):
     # loop guard, and the UI should surface it -- silently ignoring what the user asked for
     # ("only movies since 2020") would be worse than showing nothing.
     relaxed: NotRequired[bool]
+    # What `understand` extracted: the mood with the constraints removed, and the filters
+    # it found. Both stay in the state so the UI can SHOW them -- a filter the system
+    # inferred but never displayed is indistinguishable from a bug to the person who
+    # wonders why half the catalogue disappeared.
+    search_text: NotRequired[str]
+    inferred_filters: NotRequired[dict]
 
 
 def build_graph(
     *,
     retrieve_fn: Callable[..., list[dict]] = retrieve,
     generate_fn: Callable[..., str] = generate_recommendation,
+    understand_fn: Callable[..., QueryIntent] = understand,
+    genres_fn: Callable[[], list[str]] = catalogue_genres,
 ):
-    """Compile the retrieve -> generate graph. Returns a runnable graph."""
+    """Compile the understand -> retrieve -> generate graph. Returns a runnable graph."""
+
+    def understand_node(state: RecommendationState) -> dict:
+        """Split the request into a mood and hard filters before anything is searched."""
+        try:
+            intent = understand_fn(state["query"], genres=genres_fn())
+        except Exception:
+            # Understanding is a convenience layer. If it cannot run -- Qdrant down while
+            # fetching the genre vocabulary, API failure -- the query still deserves an
+            # answer, so fall through to searching the sentence as typed.
+            return {"search_text": state["query"], "inferred_filters": {}}
+
+        inferred = intent.filters()
+        explicit = state.get("filters", {})
+        return {
+            "search_text": intent.search_text,
+            "inferred_filters": inferred,
+            # EXPLICIT FILTERS WIN. If the sidebar says "movies" and the sentence implies
+            # "series", the click is the stronger signal: the user chose it deliberately,
+            # while the inference is our guess about their words. Overriding a deliberate
+            # choice with a guess is how a UI starts feeling possessed.
+            "filters": {**inferred, **explicit},
+        }
 
     def retrieve_node(state: RecommendationState) -> dict:
         hits = retrieve_fn(
-            state["query"],
+            # The mood alone, with the constraint words removed -- searching the full
+            # sentence would put "movies from before 2000" back into the embedding.
+            state.get("search_text") or state["query"],
             limit=state.get("limit", DEFAULT_LIMIT),
             **state.get("filters", {}),
         )
@@ -98,11 +146,13 @@ def build_graph(
         return "generate"
 
     builder = StateGraph(RecommendationState)
+    builder.add_node("understand", understand_node)
     builder.add_node("retrieve", retrieve_node)
     builder.add_node("relax_filters", relax_filters_node)
     builder.add_node("generate", generate_node)
 
-    builder.add_edge(START, "retrieve")
+    builder.add_edge(START, "understand")
+    builder.add_edge("understand", "retrieve")
     # The explicit destination list is not redundant: it is what lets LangGraph draw and
     # validate the graph, since the possible targets cannot be inferred from a `-> str`.
     builder.add_conditional_edges(
