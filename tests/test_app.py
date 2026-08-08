@@ -160,3 +160,30 @@ def test_a_dead_backend_shows_an_error_instead_of_crashing(app, monkeypatch):
     assert not app.exception, "the app must handle a dead backend itself"
     errors = " ".join(element.value for element in app.error)
     assert "Qdrant unreachable" in errors
+
+
+def test_inferred_filters_are_shown_to_the_user(app, monkeypatch):
+    # Query understanding is invisible unless the UI says what it did. An applied filter
+    # nobody was told about looks exactly like a bug from the user's side.
+    monkeypatch.setattr(
+        "vibewatch.graph.recommend",
+        lambda query, *, limit=5, **filters: {
+            "hits": [_hit()],
+            "answer": "Watch The Road (2009).",
+            "inferred_filters": {"media_type": "movie", "release_year_max": 1999},
+        },
+    )
+
+    _search(app, "funny movies from before 2000")
+
+    shown = " ".join(element.value for element in app.info)
+    assert "media type" in shown
+    assert "1999" in shown
+
+
+def test_nothing_is_claimed_when_nothing_was_inferred(app):
+    # A pure mood infers no filters, so the app must stay silent rather than print an
+    # empty "Understood from your request:" banner.
+    _search(app, "dark survival")
+
+    assert not any("Understood" in element.value for element in app.info)

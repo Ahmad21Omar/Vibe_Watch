@@ -28,9 +28,11 @@ LATEST_YEAR = 2030
 
 EXAMPLE_QUERIES = [
     "survival, dark, fighting to stay alive",
-    "cosy and funny, something to fall asleep to",
+    # Deliberately shows off query understanding: type, genre and year are extracted from
+    # the sentence, so the sidebar is optional rather than required.
+    "funny movies from before 2000",
+    "korean series about revenge",
     "mind-bending sci-fi that makes me think",
-    "a slow, sad story about family",
 ]
 
 st.set_page_config(page_title="Vibewatch", page_icon="🎬", layout="wide")
@@ -85,11 +87,17 @@ def render_hit(hit: dict) -> None:
 
 
 st.title("🎬 Vibewatch")
-st.caption("Describe a mood or theme — not a title. The catalogue is searched by meaning.")
+st.caption(
+    "Describe a mood or theme — not a title. The catalogue is searched by meaning, "
+    "and constraints like *“movies from before 2000”* are understood from your sentence."
+)
 
 with st.sidebar:
     st.header("Filters")
-    st.caption("Hard constraints, applied during the search — not left to the model.")
+    st.caption(
+        "Optional — constraints are also read from your sentence. Anything set here "
+        "overrides what was inferred."
+    )
 
     media_label = st.radio("Type", ["Anything", "Movies", "TV shows"], horizontal=True)
     chosen_genres = st.multiselect("Genres", _genres(), help="Matches ANY of the selected")
@@ -135,6 +143,17 @@ if st.button("Recommend", type="primary") or query:
                 "Is Qdrant running (`docker compose up -d`) and is GEMINI_API_KEY set?"
             )
             st.stop()
+
+    # Show what was inferred from the sentence. A filter the system applied but never
+    # displayed is indistinguishable from a bug to the person wondering where half the
+    # catalogue went -- and it is also the feature's only visible proof that it worked.
+    inferred = state.get("inferred_filters") or {}
+    if inferred:
+        st.info(
+            "Understood from your request: "
+            + " · ".join(f"**{key.replace('_', ' ')}** {value}" for key, value in inferred.items()),
+            icon="🧠",
+        )
 
     # Never silently ignore what the user asked for: if the filters matched nothing and
     # the graph retried without them, say so.
