@@ -50,3 +50,35 @@ def test_impossible_filter_triggers_the_relax_retry(live_services):
     assert state["relaxed"] is True
     assert state["hits"], "the relaxed retry should have found something"
     assert state["answer"].strip()
+
+
+def test_constraints_in_the_sentence_become_real_filters(live_services):
+    """The capability query understanding added, end to end against live services.
+
+    Before this node existed, "funny movies from before 2000" was embedded whole: the
+    words "before 2000" pulled the vector around without constraining anything, and the
+    results included titles from 2001 and 2025. Now the sentence is split -- "funny" is
+    searched, the type and the year become Qdrant filters.
+
+    Asserted on the FILTERS, not on which comedies come back: the catalogue changes, but
+    "no title may violate a constraint the user stated" must hold forever.
+    """
+    state = recommend("funny movies from before 2000", limit=5)
+
+    assert state["hits"], "expected pre-2000 comedies in the catalogue"
+    for hit in state["hits"]:
+        assert hit["media_type"] == "movie", hit["title"]
+        assert hit["release_year"] <= 1999, f"{hit['title']} ({hit['release_year']})"
+
+    # The filters must also be reported, or the UI cannot tell the user what it inferred.
+    assert state["inferred_filters"]["media_type"] == "movie"
+    assert state["inferred_filters"]["release_year_max"] == 1999
+
+
+def test_a_pure_mood_infers_no_filters(live_services):
+    # The opposite failure mode: inventing a constraint nobody asked for silently removes
+    # correct results. A mood with no constraints must produce an empty filter set.
+    state = recommend("dark and hopeless", limit=5)
+
+    assert state["inferred_filters"] == {}
+    assert state["hits"]
