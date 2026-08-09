@@ -1,6 +1,12 @@
-# The whole application: the Streamlit UI plus the Qdrant vector database.
+# The whole application: three services.
+#
+#   ui  (Streamlit, :8501)  ->  api  (FastAPI, :8000)  ->  qdrant  (:6333)
+#
+# The UI is an ordinary client of the API -- it has no private path into the pipeline, so
+# using the app exercises exactly the contract every other consumer gets.
 #
 # Start everything:  docker compose up -d --build   ->  UI at http://localhost:8501
+#                                                       API docs at :8000/docs
 # Only the database: docker compose up -d qdrant    ->  what the local dev setup needs
 # Stop:              docker compose down
 #
@@ -18,11 +24,12 @@ services:
       - ./qdrant_storage:/qdrant/storage
     restart: unless-stopped
 
-  app:
+  api:
     build: .
-    container_name: vibewatch-app
+    container_name: vibewatch-api
+    command: uvicorn vibewatch.api:app --host 0.0.0.0 --port 8000
     ports:
-      - "8501:8501"
+      - "8000:8000"
     # Keys come from .env at RUN time -- never copied into the image (see .dockerignore).
     env_file: .env
     environment:
@@ -31,4 +38,19 @@ services:
       QDRANT_URL: http://qdrant:6333
     depends_on:
       - qdrant
+    restart: unless-stopped
+
+  ui:
+    build: .
+    container_name: vibewatch-ui
+    # Same image, different process. One build, two roles -- and no chance of the UI
+    # running against a different version of the code than the API.
+    command: streamlit run app.py --server.address=0.0.0.0 --server.port=8501
+    ports:
+      - "8501:8501"
+    env_file: .env
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      - api
     restart: unless-stopped

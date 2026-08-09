@@ -1,8 +1,8 @@
 """Tests for the Streamlit UI, headless -- no browser, no Qdrant, no Gemini.
 
 `AppTest` runs app.py exactly as Streamlit would and exposes the resulting widgets and
-elements. We patch the two boundaries (`recommend` and `available_genres`) so the whole
-UI logic runs for real against fakes.
+elements. The page is an API client now, so the boundary we patch is the HTTP client --
+no server, no Qdrant, no Gemini, while every line of UI logic runs for real.
 
 The logic worth testing is the part that quietly changes what the user gets:
 
@@ -65,13 +65,9 @@ def app(monkeypatch):
         calls.append({"query": query, "limit": limit, **filters})
         return {"query": query, "hits": [_hit()], "answer": "Watch The Road (2009)."}
 
-    # Patched on the modules app.py imports FROM, before it is imported -- so its
-    # `from ... import recommend` picks up the fake.
-    monkeypatch.setattr("vibewatch.graph.recommend", fake_recommend)
-    monkeypatch.setattr(
-        "vibewatch.vector_store.available_genres", lambda client: ["Drama", "Horror"]
-    )
-    monkeypatch.setattr("vibewatch.vector_store.get_client", lambda: object())
+    # Patched on the client module app.py imports, before the page runs.
+    monkeypatch.setattr("vibewatch.client.recommend", fake_recommend)
+    monkeypatch.setattr("vibewatch.client.genres", lambda: ["Drama", "Horror"])
 
     at = AppTest.from_file(APP, default_timeout=30)
     at.calls = calls
@@ -133,7 +129,7 @@ def test_year_slider_at_its_extremes_sends_no_bound(app):
 
 def test_relaxed_result_warns_that_filters_were_dropped(app, monkeypatch):
     monkeypatch.setattr(
-        "vibewatch.graph.recommend",
+        "vibewatch.client.recommend",
         lambda query, *, limit=5, **filters: {
             "hits": [_hit()],
             "answer": "Watch The Road (2009).",
@@ -150,10 +146,12 @@ def test_relaxed_result_warns_that_filters_were_dropped(app, monkeypatch):
 
 
 def test_a_dead_backend_shows_an_error_instead_of_crashing(app, monkeypatch):
-    def boom(query, *, limit=5, **filters):
-        raise ConnectionError("Qdrant unreachable")
+    from vibewatch.client import ApiError
 
-    monkeypatch.setattr("vibewatch.graph.recommend", boom)
+    def boom(query, *, limit=5, **filters):
+        raise ApiError("Qdrant unreachable")
+
+    monkeypatch.setattr("vibewatch.client.recommend", boom)
 
     _search(app)
 
@@ -166,7 +164,7 @@ def test_inferred_filters_are_shown_to_the_user(app, monkeypatch):
     # Query understanding is invisible unless the UI says what it did. An applied filter
     # nobody was told about looks exactly like a bug from the user's side.
     monkeypatch.setattr(
-        "vibewatch.graph.recommend",
+        "vibewatch.client.recommend",
         lambda query, *, limit=5, **filters: {
             "hits": [_hit()],
             "answer": "Watch The Road (2009).",

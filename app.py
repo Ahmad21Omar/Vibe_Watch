@@ -1,6 +1,8 @@
 """Streamlit frontend: describe a mood, get a grounded recommendation.
 
-Run:  streamlit run app.py     (needs Qdrant up and the index populated)
+Run:  uvicorn vibewatch.api:app     (the service this page talks to)
+      streamlit run app.py
+Or simply `docker compose up -d --build`, which starts both.
 
 The layout is a deliberate argument about RAG, not just a form: the generated answer sits
 next to the titles it was generated FROM. A recommender that only shows prose asks you to
@@ -8,15 +10,20 @@ trust it; showing the retrieved evidence alongside lets anyone check the answer 
 its sources -- which is exactly what grounding means and the first thing a reviewer of an
 LLM feature should be able to do.
 
+This page is an ORDINARY API CLIENT. It could import the pipeline directly -- it used to --
+but then the service would be decoration, the two paths could drift apart, and the UI would
+prove nothing about the API. As a client, the most-used part of the app exercises the same
+contract every other consumer gets.
+
 Streamlit re-runs this whole script on every interaction, so anything expensive has to be
-cached explicitly. That is what `@st.cache_data` / `@st.cache_resource` are for below --
-without them, every click would spend Gemini quota again.
+cached explicitly. That is what `@st.cache_data` is for below -- without it, every click
+would spend Gemini quota again.
 """
 
 import streamlit as st
 
-from vibewatch.graph import recommend
-from vibewatch.vector_store import available_genres, get_client
+from vibewatch import client
+from vibewatch.client import ApiError
 
 POSTER_BASE_URL = "https://image.tmdb.org/t/p/w200"
 
@@ -38,31 +45,25 @@ EXAMPLE_QUERIES = [
 st.set_page_config(page_title="Vibewatch", page_icon="🎬", layout="wide")
 
 
-@st.cache_resource
-def _client():
-    """One Qdrant client for the whole session (cache_resource = not serialized)."""
-    return get_client()
-
-
 @st.cache_data(show_spinner=False)
 def _genres() -> list[str]:
-    """The catalogue's real genres. Cached: it changes only when we re-index."""
+    """The catalogue's real genres. Cached: they change only when we re-index."""
     try:
-        return available_genres(_client())
-    except Exception:
-        # A dead Qdrant should not blank the page -- the query below will report it.
+        return client.genres()
+    except ApiError:
+        # A dead API should not blank the page -- the query below will report it properly.
         return []
 
 
 @st.cache_data(show_spinner=False)
 def _recommend(query: str, limit: int, filters: dict) -> dict:
-    """Cached pipeline run.
+    """Cached API call.
 
     Keyed on the query AND the filters, so re-rendering (a checkbox, a resize) is free
-    while a genuinely new request still goes through. Every uncached run costs one
-    embedding of the daily quota plus one LLM call.
+    while a genuinely new request still goes through. Every uncached call costs one
+    embedding of the daily quota plus two LLM calls on the server side.
     """
-    return recommend(query, limit=limit, **filters)
+    return client.recommend(query, limit=limit, **filters)
 
 
 def render_hit(hit: dict) -> None:
@@ -137,10 +138,11 @@ if st.button("Recommend", type="primary") or query:
     with st.spinner("Searching the catalogue and writing a recommendation..."):
         try:
             state = _recommend(query, limit, filters)
-        except Exception as error:
+        except ApiError as error:
             st.error(f"Something went wrong: {error}")
             st.caption(
-                "Is Qdrant running (`docker compose up -d`) and is GEMINI_API_KEY set?"
+                "Is the API running (`docker compose up -d`, or "
+                "`uvicorn vibewatch.api:app`)? Check `/health` for the index status."
             )
             st.stop()
 

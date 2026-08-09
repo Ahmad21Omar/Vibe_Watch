@@ -1,5 +1,7 @@
-# Image for the Streamlit app. Qdrant runs as its own official image -- see
-# docker-compose.yml, which wires the two together.
+# ONE image, two roles: the API and the Streamlit UI run from it with different commands
+# (see docker-compose.yml). Building it twice would let the two drift onto different
+# versions of the same code -- the exact bug a service boundary is supposed to prevent.
+# Qdrant runs as its own official image.
 #
 # Built so `docker compose up` is the only command a stranger needs: no Python install,
 # no virtualenv, no version mismatch. The offline ingestion scripts stay OUT of this
@@ -17,8 +19,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY vibewatch/ ./vibewatch/
 COPY app.py .
 
-EXPOSE 8501
+EXPOSE 8000 8501
 
+# Default role is the API; compose overrides `command` for the UI container.
 # 0.0.0.0 rather than the default localhost: inside a container, "localhost" is the
-# container itself, so binding there would make the app unreachable from the host.
-CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501"]
+# container itself, so binding there would make the service unreachable from the host.
+CMD ["uvicorn", "vibewatch.api:app", "--host", "0.0.0.0", "--port", "8000"]
