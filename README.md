@@ -40,9 +40,14 @@ retrieved evidence lets anyone check the answer against its sources.
           │               │   vectors + metadata         │
           │               └──────────────┬──────────────┘
           ▼                              │
+   ┌──────────────┐                      │
+   │  Understand  │  mood + filters      │
+   │  the request │                      │
+   └──────┬───────┘                      │
+          ▼                              │
    ┌──────────────┐   query vector       │
    │  Embed the   │──────────────────────┤
-   │  user query  │                      ▼
+   │  mood        │                      ▼
    └──────────────┘        ┌─────────────────────────────┐
                            │   4. Retrieval (Top-K)       │
                            │   + metadata filters         │
@@ -57,7 +62,7 @@ retrieved evidence lets anyone check the answer against its sources.
                                (Streamlit frontend)
 ```
 
-The query flow (4 → 5) is orchestrated with **LangGraph**, and both halves are measured:
+The query flow is orchestrated with **LangGraph**, and both halves are measured:
 retrieval against hand-labelled queries, generation by an LLM-as-judge.
 
 ---
@@ -125,7 +130,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 docker compose up -d qdrant      # just the database -- dashboard at :6333/dashboard
-pytest                           # 114 tests, no keys and no services required
+pytest                           # 134 tests, no keys and no services required
 streamlit run app.py
 ```
 
@@ -152,7 +157,8 @@ Vibewatch/
 │   ├── vector_store.py  # Qdrant: collection, indexing, filtered search
 │   ├── retrieval.py     # query -> ranked, grounded titles (the retrieval seam)
 │   ├── generation.py    # prompt building + grounded LLM recommendation
-│   ├── graph.py         # LangGraph flow: retrieve -> generate (+ retry)
+│   ├── query_understanding.py  # free text -> mood + hard filters
+│   ├── graph.py         # LangGraph: understand -> retrieve -> generate (+ retry)
 │   ├── evaluation.py    # retrieval metrics: recall@k, MRR
 │   └── judge.py         # LLM-as-judge: is the answer faithful to its sources?
 ├── scripts/
@@ -179,8 +185,8 @@ Vibewatch/
 ## 🧪 Tests
 
 ```bash
-pytest                  # 114 fast, pure unit tests -- no API, no Docker, no quota
-pytest -m integration   # 7 end-to-end tests against live Qdrant + Gemini (opt-in)
+pytest                  # 134 fast, pure unit tests -- no API, no Docker, no quota
+pytest -m integration   # 9 end-to-end tests against live Qdrant + Gemini (opt-in)
 ruff check .            # lint (same command CI runs)
 ```
 
@@ -315,15 +321,58 @@ question that intuition got wrong.**
 
 ---
 
+## 🧠 Query understanding
+
+*"Funny movies from before 2000"* is two requests in one sentence: a mood (**funny**) and
+two hard constraints (**movies**, **before 2000**). A first node splits them before
+anything is searched:
+
+```
+"funny movies from before 2000"
+    -> search_text        "funny"          ->  embedded and searched
+    -> media_type         "movie"          ->  Qdrant filter
+    -> release_year_max   1999             ->  Qdrant filter
+```
+
+The constraint words leaving the search text is not cosmetic. Embedded whole, *"before
+2000"* pulls the vector towards titles **about** the year 2000 instead of titles **from**
+it — and constrains nothing at all:
+
+| | Result for *"funny movies from before 2000"* |
+|---|---|
+| **Before** | The Truman Show (1998), **Lilo & Stitch (2025)**, Back to the Future (1985), **Shrek (2001)**, Pulp Fiction (1994) |
+| **After** | The Nurse on a Military Tour (1977), Gas Pump Girls (1979), Forrest Gump (1994), Cavegirl (1985) |
+
+Two of five results violated the stated constraint; now none can. That property — *no
+title may violate a constraint the user stated* — is pinned as an integration test.
+
+Three decisions behind it:
+
+- **The genre vocabulary comes from the catalogue, not the model.** The real genre list is
+  passed into the prompt, because a model left to itself writes "Sci-Fi" where the index
+  says "Science Fiction" — a filter that silently matches nothing. Grounding the
+  vocabulary is the same principle as grounding the answer.
+- **Explicit filters beat inferred ones.** If the sidebar says *movies* and the sentence
+  implies *series*, the click wins: it is a deliberate choice, the inference is a guess.
+- **It can never take a query down.** Any failure — API error, malformed JSON, Qdrant
+  unreachable while fetching genres — falls back to searching the sentence as typed.
+
+Cost: one extra LLM call per query, before retrieval starts. That is the honest trade —
+about a second of latency for requests the system otherwise could not answer at all. What
+was inferred is always shown in the UI: a filter that was applied but never mentioned is
+indistinguishable from a bug.
+
+---
+
 ## ✍️ Generation & orchestration
 
 ```
-                    hits found
-    query --> [retrieve] ------> [generate] --> answer
-                  ^   |
-                  |   | nothing found, but filters were set
-                  |   v
-              [relax_filters]
+                                    hits found
+    query --> [understand] --> [retrieve] ------> [generate] --> answer
+                                   ^   |
+                                   |   | nothing found, but filters were set
+                                   |   v
+                               [relax_filters]
 ```
 
 The LLM is given the retrieved titles as numbered, factual blocks and told that they are
@@ -337,8 +386,12 @@ The model also acts as a **re-ranker**: it is told it may skip a higher-ranked c
 because similarity is not the same as suitability. In a real run, *Fight Club* ranked
 second for a survival query and the model correctly passed it over.
 
-**Why a graph for two steps?** Honestly: the linear part alone would not justify one. It
-starts paying off at the conditional edge. Hard filters are unforgiving — "TV shows from
+**Why a graph at all?** Honestly: a straight line of steps would not justify one — nested
+function calls do that in a line. Two things earn it. The **shared state**: `understand`
+writes `search_text` and `filters`, `retrieve` reads them without knowing who produced
+them, `relax_filters` rewrites them and sends the flow back; threading that through call
+arguments would change every signature each time a node is inserted. And the **conditional
+edge**, which is where it starts paying off: Hard filters are unforgiving — "TV shows from
 2024 tagged Western" easily matches nothing in a 900-title catalogue — so when a filtered
 search comes back empty the flow retries once without the filters instead of giving up on
 a mood it could have matched. The `relaxed` flag caps that at one retry and is surfaced to
