@@ -17,6 +17,9 @@ langgraph           # Orchestrates retrieve -> generate as a stateful graph
 # --- Step 6: Frontend & evaluation ---
 streamlit           # UI: mood in, recommendation + retrieved sources out
 
+# --- Step 7: Service layer ---
+fastapi             # HTTP API in front of the pipeline (uvicorn ships with streamlit)
+
 # --- Dev tooling (not needed at runtime) ---
 pytest              # Unit tests for the pure data-transformation logic
 ruff                # Linter (configured in pyproject.toml), also run in CI

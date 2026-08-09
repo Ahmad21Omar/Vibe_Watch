@@ -41,8 +41,11 @@ class Settings(BaseSettings):
     tmdb_api_key: str = ""
     gemini_api_key: str = ""
 
-    # Optional value with a sensible default for local Docker.
+    # Optional values with sensible defaults for local Docker.
     qdrant_url: str = "http://localhost:6333"
+    # Where the UI finds the API. Inside docker compose this is overridden to the service
+    # name (http://api:8000), because "localhost" in a container is the container itself.
+    api_url: str = "http://localhost:8000"
 
     def require(self, name: str) -> str:
         """Return the setting `name`, or explain exactly what is missing and how to fix it."""
