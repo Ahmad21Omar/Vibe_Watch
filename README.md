@@ -59,7 +59,7 @@ retrieved evidence lets anyone check the answer against its sources.
                            └──────────────┬──────────────┘
                                           ▼
                                Recommendation to the user
-                               (Streamlit frontend)
+                        (FastAPI service -> Streamlit frontend)
 ```
 
 The query flow is orchestrated with **LangGraph**, and both halves are measured:
@@ -72,6 +72,7 @@ retrieval against hand-labelled queries, generation by an LLM-as-judge.
 | Component | Technology | Why |
 |-----------|-------------|-----|
 | Language | Python 3.12 | Standard for AI engineering |
+| Service layer | FastAPI | Typed request/response schemas, OpenAPI docs, explicit status codes |
 | Data source | TMDb API | Movies & TV shows, multilingual descriptions, free |
 | Embeddings | Gemini `gemini-embedding-001` | Strong semantic quality, free tier, no local storage cost |
 | Vector DB | Qdrant (Docker) | Fast similarity search, metadata filters, sparse vectors |
@@ -92,9 +93,11 @@ retrieval against hand-labelled queries, generation by an LLM-as-judge.
 - [x] **Step 5 — Generation & orchestration:** LangGraph flow + LLM reasoning
 - [x] **Step 6 — Frontend & evaluation:** Streamlit UI, retrieval + faithfulness metrics,
       Docker deployment
+- [x] **Step 7 — Beyond the plan:** hybrid search (built, measured, *rejected* — see
+      below), query understanding, and a FastAPI service layer
 
 ```bash
-docker compose up -d --build                              # the UI, on :8501
+docker compose up -d --build                              # UI :8501, API :8000
 python -m scripts.recommend "dark survival" --type movie  # the same thing, from the CLI
 python -m scripts.evaluate_retrieval                      # how good is retrieval?
 python -m scripts.evaluate_generation                     # is the answer faithful?
@@ -116,11 +119,18 @@ Both keys are free: [TMDb](https://www.themoviedb.org/settings/api) ·
 ### Run it with Docker
 
 ```bash
-docker compose up -d --build     # UI at http://localhost:8501
+docker compose up -d --build
 ```
 
+| | |
+|---|---|
+| UI | http://localhost:8501 |
+| API docs (OpenAPI) | http://localhost:8000/docs |
+| Readiness | http://localhost:8000/health |
+| Qdrant dashboard | http://localhost:6333/dashboard |
+
 The index needs to be built once (see [Data pipeline](#-data-pipeline) below); until then
-the app starts but finds nothing.
+`/health` answers **503** and says so.
 
 ### Develop locally
 
@@ -130,8 +140,10 @@ python -m venv .venv
 pip install -r requirements.txt
 
 docker compose up -d qdrant      # just the database -- dashboard at :6333/dashboard
-pytest                           # 134 tests, no keys and no services required
-streamlit run app.py
+pytest                           # 150 tests, no keys and no services required
+
+uvicorn vibewatch.api:app        # the service...
+streamlit run app.py             # ...and the UI that talks to it
 ```
 
 **The test suite deliberately needs no secrets.** API keys are optional at import and
@@ -145,8 +157,10 @@ without a single credential.
 
 ```
 Vibewatch/
-├── app.py               # Streamlit UI: mood in, recommendation + sources out
+├── app.py               # Streamlit UI -- an ordinary client of the API
 ├── vibewatch/           # Python package with the actual code
+│   ├── api.py           # FastAPI service: /recommend, /health, /genres
+│   ├── client.py        # HTTP client the UI uses
 │   ├── config.py        # central, type-safe configuration
 │   ├── gemini.py        # shared retry policy for the Gemini API (429 / 5xx)
 │   ├── bm25.py          # BM25 sparse vectors (the keyword half of hybrid search)
@@ -176,7 +190,7 @@ Vibewatch/
 ├── .env.example         # template for API keys
 ├── requirements.txt     # Python dependencies (grouped by step)
 ├── Dockerfile           # image for the Streamlit app
-├── docker-compose.yml   # the whole stack: app + Qdrant
+├── docker-compose.yml   # the whole stack: ui + api + Qdrant
 └── README.md
 ```
 
@@ -185,7 +199,7 @@ Vibewatch/
 ## 🧪 Tests
 
 ```bash
-pytest                  # 134 fast, pure unit tests -- no API, no Docker, no quota
+pytest                  # 150 fast, pure unit tests -- no API, no Docker, no quota
 pytest -m integration   # 9 end-to-end tests against live Qdrant + Gemini (opt-in)
 ruff check .            # lint (same command CI runs)
 ```
@@ -396,6 +410,53 @@ edge**, which is where it starts paying off: Hard filters are unforgiving — "T
 search comes back empty the flow retries once without the filters instead of giving up on
 a mood it could have matched. The `relaxed` flag caps that at one retry and is surfaced to
 the user, because silently ignoring what someone asked for is worse than showing nothing.
+
+---
+
+## 🔌 The API
+
+```
+ui (Streamlit :8501)  ──HTTP──>  api (FastAPI :8000)  ──>  qdrant (:6333)
+```
+
+```bash
+curl -X POST localhost:8000/recommend -H 'Content-Type: application/json' \
+     -d '{"query": "funny movies from before 2000", "limit": 3}'
+```
+```json
+{
+  "answer": "If you are looking for some classic laughs from before 2000...",
+  "hits": [{ "title": "Forrest Gump", "release_year": 1994, "score": 0.631, ... }],
+  "inferred_filters": { "media_type": "movie", "genres": ["Comedy"], "release_year_max": 1999 },
+  "relaxed": false
+}
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /recommend` | the full pipeline: understand → retrieve → generate |
+| `GET /health` | **readiness**, not liveness — 503 if the index is unreachable *or empty* |
+| `GET /genres` | the catalogue's real genres, so a client need not hardcode a list |
+
+**Why a service, when Streamlit could just call the pipeline — and did?**
+
+1. **One pipeline, many clients.** Without it, every consumer needs Python, the
+   dependencies, an API key and a Qdrant connection. With it, they need a URL.
+2. **The failure surface becomes explicit.** A direct call fails with whatever exception
+   bubbles up. Here each mode is a decided status code: **422** for a malformed request
+   (derived from the schema — an empty query or `media_type: "documentary"` never reaches
+   the pipeline), **503** for a dependency that is down. A client can react to that
+   instead of parsing tracebacks; 503 means *retry*, 422 means *don't*.
+3. **It is where operational concerns belong.** Rate limits, auth, caching, tracing and
+   metrics attach to a service, not to a Streamlit script.
+
+**The UI has no private path into the pipeline.** It imports the same HTTP client any
+other consumer would use, and there is deliberately no fallback to an in-process call — a
+silent fallback would let the app look healthy while the service behind it is down. The
+practical benefit: the most-used part of the system is also the API's integration test.
+
+The API and the UI run from **one image** with different commands, so the two can never
+drift onto different versions of the same code.
 
 ---
 
