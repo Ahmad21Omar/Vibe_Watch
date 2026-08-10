@@ -56,14 +56,18 @@ def _genres() -> list[str]:
 
 
 @st.cache_data(show_spinner=False)
-def _recommend(query: str, limit: int, filters: dict) -> dict:
+def _recommend(query: str, limit: int, filters: dict, history: tuple[str, ...] = ()) -> dict:
     """Cached API call.
 
-    Keyed on the query AND the filters, so re-rendering (a checkbox, a resize) is free
-    while a genuinely new request still goes through. Every uncached call costs one
-    embedding of the daily quota plus two LLM calls on the server side.
+    Keyed on the query, the filters AND the history -- the last one matters: "something
+    shorter" means something different after "korean series" than after "space
+    documentaries", so caching on the query alone would serve the wrong answer. (A tuple
+    because the key has to be hashable.)
+
+    Every uncached call costs one embedding of the daily quota plus two LLM calls
+    server-side, so re-rendering (a slider, a resize) staying free is worth the care.
     """
-    return client.recommend(query, limit=limit, **filters)
+    return client.recommend(query, limit=limit, history=list(history), **filters)
 
 
 def render_hit(hit: dict) -> None:
@@ -112,18 +116,58 @@ with st.sidebar:
     )
     limit = st.slider("Titles to retrieve", min_value=3, max_value=10, value=5)
 
-query = st.text_input(
-    "What are you in the mood for?",
-    placeholder=EXAMPLE_QUERIES[0],
-)
+def render_turn(turn: dict) -> None:
+    """One exchange: what was asked, what was inferred, the answer and its sources."""
+    with st.chat_message("user"):
+        st.write(turn["query"])
 
-st.caption("Try: " + " · ".join(f"*{example}*" for example in EXAMPLE_QUERIES))
+    with st.chat_message("assistant"):
+        # Show what was inferred from the sentence. A filter the system applied but never
+        # displayed is indistinguishable from a bug to the person wondering where half the
+        # catalogue went -- and it is the feature's only visible proof that it worked.
+        inferred = turn["state"].get("inferred_filters") or {}
+        if inferred:
+            st.info(
+                "Understood from your request: "
+                + " · ".join(
+                    f"**{key.replace('_', ' ')}** {value}" for key, value in inferred.items()
+                ),
+                icon="🧠",
+            )
 
-if st.button("Recommend", type="primary") or query:
-    if not query.strip():
-        st.info("Describe a mood to get started.")
-        st.stop()
+        # Never silently ignore what the user asked for: if the filters matched nothing
+        # and the graph retried without them, say so.
+        if turn["state"].get("relaxed"):
+            st.warning(
+                "No title matched your filters, so they were dropped for this search.",
+                icon="⚠️",
+            )
 
+        answer, sources = st.columns([3, 2], gap="large")
+        with answer:
+            st.write(turn["state"]["answer"])
+        with sources:
+            st.caption("The only titles the model was allowed to recommend from.")
+            for hit in turn["state"]["hits"]:
+                render_hit(hit)
+                st.divider()
+
+
+# The conversation lives in the SESSION, not on the server. That is what keeps the API
+# stateless: no sticky sessions, no shared store, and a restart of the service drops
+# nothing. Each request carries the history it wants to be understood against.
+if "turns" not in st.session_state:
+    st.session_state.turns = []
+
+for past_turn in st.session_state.turns:
+    render_turn(past_turn)
+
+if not st.session_state.turns:
+    st.caption("Try: " + " · ".join(f"*{example}*" for example in EXAMPLE_QUERIES))
+
+query = st.chat_input("What are you in the mood for?")
+
+if query and query.strip():
     filters = {
         key: value
         for key, value in {
@@ -135,9 +179,16 @@ if st.button("Recommend", type="primary") or query:
         if value is not None
     }
 
+    # Only the user's own words -- the generated answers are long, would dominate the
+    # prompt, and what a follow-up refers to is what was ASKED, not what we replied.
+    history = [past["query"] for past in st.session_state.turns]
+
+    with st.chat_message("user"):
+        st.write(query)
+
     with st.spinner("Searching the catalogue and writing a recommendation..."):
         try:
-            state = _recommend(query, limit, filters)
+            state = _recommend(query, limit, filters, tuple(history))
         except ApiError as error:
             st.error(f"Something went wrong: {error}")
             st.caption(
@@ -146,34 +197,11 @@ if st.button("Recommend", type="primary") or query:
             )
             st.stop()
 
-    # Show what was inferred from the sentence. A filter the system applied but never
-    # displayed is indistinguishable from a bug to the person wondering where half the
-    # catalogue went -- and it is also the feature's only visible proof that it worked.
-    inferred = state.get("inferred_filters") or {}
-    if inferred:
-        st.info(
-            "Understood from your request: "
-            + " · ".join(f"**{key.replace('_', ' ')}** {value}" for key, value in inferred.items()),
-            icon="🧠",
-        )
+    st.session_state.turns.append({"query": query, "state": state})
+    # Re-run so the new turn is rendered by render_turn() like every other one, instead
+    # of being drawn twice by two slightly different code paths.
+    st.rerun()
 
-    # Never silently ignore what the user asked for: if the filters matched nothing and
-    # the graph retried without them, say so.
-    if state.get("relaxed"):
-        st.warning(
-            "No title matched your filters, so they were dropped for this search.",
-            icon="⚠️",
-        )
-
-    answer, sources = st.columns([3, 2], gap="large")
-
-    with answer:
-        st.subheader("Recommendation")
-        st.write(state["answer"])
-
-    with sources:
-        st.subheader("Retrieved titles")
-        st.caption("The only titles the model was allowed to recommend from.")
-        for hit in state["hits"]:
-            render_hit(hit)
-            st.divider()
+if st.session_state.turns and st.sidebar.button("Start a new conversation"):
+    st.session_state.turns = []
+    st.rerun()

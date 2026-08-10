@@ -75,8 +75,9 @@ def app(monkeypatch):
 
 
 def _search(app, query="dark survival"):
+    """One turn of the conversation."""
     app.run()
-    app.text_input[0].set_value(query).run()
+    app.chat_input[0].set_value(query).run()
     return app
 
 
@@ -85,7 +86,8 @@ def test_a_plain_query_sends_no_filters(app):
     # would narrow every single search in the app.
     _search(app)
 
-    assert app.calls == [{"query": "dark survival", "limit": 5}]
+    # `history` is always sent (empty on a first turn) so the server stays stateless.
+    assert app.calls == [{"query": "dark survival", "limit": 5, "history": []}]
 
 
 def test_answer_and_sources_are_both_rendered(app):
@@ -104,11 +106,12 @@ def test_sidebar_choices_become_filter_kwargs(app):
     app.multiselect[0].set_value(["Drama"])
     app.slider[0].set_value((2000, 2020))  # year range
     app.slider[1].set_value(8)  # how many to retrieve
-    app.text_input[0].set_value("dark survival").run()
+    app.chat_input[0].set_value("dark survival").run()
 
     assert app.calls[-1] == {
         "query": "dark survival",
         "limit": 8,
+        "history": [],
         "media_type": "movie",
         "genres": ["Drama"],
         "release_year_min": 2000,
@@ -121,7 +124,7 @@ def test_year_slider_at_its_extremes_sends_no_bound(app):
     # range would exclude every title with an unknown release year.
     app.run()
     app.slider[0].set_value((1950, 2020))
-    app.text_input[0].set_value("dark").run()
+    app.chat_input[0].set_value("dark").run()
 
     assert "release_year_min" not in app.calls[-1]
     assert app.calls[-1]["release_year_max"] == 2020
@@ -139,7 +142,7 @@ def test_relaxed_result_warns_that_filters_were_dropped(app, monkeypatch):
 
     app.run()
     app.radio[0].set_value("TV shows")
-    app.text_input[0].set_value("dark").run()
+    app.chat_input[0].set_value("dark").run()
 
     warnings = " ".join(element.value for element in app.warning)
     assert "filters" in warnings.lower()
@@ -185,3 +188,45 @@ def test_nothing_is_claimed_when_nothing_was_inferred(app):
     _search(app, "dark survival")
 
     assert not any("Understood" in element.value for element in app.info)
+
+
+# --- conversations ----------------------------------------------------------------------
+
+
+def test_a_follow_up_carries_the_earlier_turn(app):
+    # The point of the chat UI: "something shorter" is meaningless unless the earlier
+    # request travels with it. The client owns that history -- the server is stateless.
+    _search(app, "korean series about revenge")
+    app.chat_input[0].set_value("something shorter").run()
+
+    assert app.calls[0]["history"] == []
+    assert app.calls[1]["history"] == ["korean series about revenge"]
+    assert app.calls[1]["query"] == "something shorter"
+
+
+def test_only_the_user_words_are_sent_as_history(app):
+    # Not the generated answers: they are long, would dominate the prompt, and a follow-up
+    # refers to what was ASKED, not to what we replied.
+    _search(app, "dark survival")
+    app.chat_input[0].set_value("but funnier").run()
+
+    assert app.calls[1]["history"] == ["dark survival"]
+    assert all("Watch The Road" not in turn for turn in app.calls[1]["history"])
+
+
+def test_every_turn_stays_on_screen(app):
+    _search(app, "dark survival")
+    app.chat_input[0].set_value("but funnier").run()
+
+    rendered = " ".join(element.value for element in app.markdown)
+    assert "dark survival" in rendered
+    assert "but funnier" in rendered
+
+
+def test_starting_a_new_conversation_forgets_the_history(app):
+    # A fresh topic must not be haunted by the old constraints.
+    _search(app, "korean series about revenge")
+    app.sidebar.button[0].click().run()          # "Start a new conversation"
+    app.chat_input[0].set_value("space documentaries").run()
+
+    assert app.calls[-1]["history"] == []

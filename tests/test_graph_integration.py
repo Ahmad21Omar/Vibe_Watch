@@ -82,3 +82,36 @@ def test_a_pure_mood_infers_no_filters(live_services):
 
     assert state["inferred_filters"] == {}
     assert state["hits"]
+
+
+def test_a_follow_up_keeps_the_constraints_it_did_not_revoke(live_services):
+    """Multi-turn, end to end. "Something funnier" is meaningless on its own.
+
+    Retrieval has no memory and never will, so the follow-up is resolved against the
+    earlier turn BEFORE anything is searched. What must survive is what the user did not
+    take back: still korean, still a series.
+    """
+    state = recommend(
+        "something funnier", limit=5, history=["korean series about revenge"]
+    )
+
+    assert state["inferred_filters"].get("media_type") == "tv"
+    assert state["inferred_filters"].get("original_language") == "ko"
+    assert state["hits"]
+    for hit in state["hits"]:
+        assert hit["media_type"] == "tv", hit["title"]
+        assert hit["original_language"] == "ko", hit["title"]
+
+
+def test_a_new_topic_drops_the_old_constraints(live_services):
+    # The opposite failure mode, and the harder one: constraints that HAUNT a fresh
+    # request. After "korean series", asking for space documentaries must not still be
+    # filtered to korean television.
+    state = recommend(
+        "space documentaries",
+        limit=5,
+        history=["korean series about revenge", "something funnier"],
+    )
+
+    assert "original_language" not in state["inferred_filters"]
+    assert state["hits"]
