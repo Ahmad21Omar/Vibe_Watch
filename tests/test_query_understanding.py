@@ -132,3 +132,56 @@ def test_an_empty_search_text_falls_back_to_the_original_query():
 
     assert intent.search_text == "comedies from the 90s"
     assert intent.filters()["genres"] == ["Comedy"]
+
+
+# --- follow-ups in a conversation --------------------------------------------------------
+
+
+def test_a_first_request_carries_no_history_section():
+    # Without a conversation the prompt must stay exactly as it was -- no empty
+    # "earlier requests" block confusing the model into inventing context.
+    prompt = build_prompt("dark survival", CATALOGUE_GENRES)
+
+    assert "FOLLOW-UP" not in prompt
+
+
+def test_a_follow_up_prompt_includes_the_earlier_requests():
+    # "Something shorter" is meaningless on its own. Retrieval has no memory, so the
+    # earlier turns have to reach the model that rewrites the request.
+    prompt = build_prompt(
+        "something shorter",
+        CATALOGUE_GENRES,
+        history=["korean series about revenge", "but funnier"],
+    )
+
+    assert "FOLLOW-UP" in prompt
+    assert "korean series about revenge" in prompt
+    assert "but funnier" in prompt
+
+
+def test_history_is_forwarded_to_the_extractor():
+    seen = {}
+
+    def spy(prompt):
+        seen["prompt"] = prompt
+        return json.dumps({"search_text": "funny korean revenge"})
+
+    understand(
+        "something funnier",
+        genres=CATALOGUE_GENRES,
+        history=["korean revenge"],
+        extract=spy,
+    )
+
+    assert "korean revenge" in seen["prompt"]
+
+
+def test_a_follow_up_still_degrades_safely():
+    # The failure path must not become more fragile just because there is a conversation.
+    def boom(prompt):
+        raise ConnectionError("API down")
+
+    intent = understand("something shorter", history=["dark survival"], extract=boom)
+
+    assert intent.search_text == "something shorter"
+    assert intent.filters() == {}

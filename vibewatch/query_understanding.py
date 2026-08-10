@@ -68,8 +68,24 @@ Rules:
   "bollywood" -> "hi". Not the language they want to watch in.
 - Leave any field out when the user did not ask for it. Do not guess. An invented filter
   removes correct results the user wanted.
-
+{history_rules}
 Request: {query}"""
+
+# Appended only when there IS a conversation. A follow-up like "something shorter" is
+# meaningless alone -- it has to be read against what came before and turned into a
+# request that stands on its own, because retrieval has no memory.
+HISTORY_RULES = """
+This is a FOLLOW-UP in a conversation. Earlier requests, oldest first:
+{history}
+
+Resolve it against that history into a request that stands on its own:
+- "something similar", "more like that", "another one" -> repeat the previous mood.
+- "but shorter", "but funnier", "more of a thriller" -> keep the previous mood and adjust.
+- Carry over constraints the user has not revoked: after "korean series", a follow-up of
+  "something funnier" is still korean and still a series.
+- A clearly NEW topic replaces everything: after "korean series", "space documentaries"
+  keeps nothing. Do not let old constraints haunt a fresh request.
+"""
 
 
 class QueryIntent(BaseModel):
@@ -100,8 +116,18 @@ class QueryIntent(BaseModel):
         return {key: value for key, value in candidates.items() if value is not None}
 
 
-def build_prompt(query: str, genres: list[str], today: datetime.date | None = None) -> str:
-    """Assemble the extraction prompt, with the catalogue's real genres baked in."""
+def build_prompt(
+    query: str,
+    genres: list[str],
+    today: datetime.date | None = None,
+    history: list[str] | None = None,
+) -> str:
+    """Assemble the extraction prompt, with the catalogue's real genres baked in.
+
+    `history` is the list of earlier user requests, oldest first. Only the user's own
+    words go in -- not the generated answers. The answers are long, would dominate the
+    prompt, and the thing to resolve against is what the person ASKED, not what we said.
+    """
     year = (today or datetime.date.today()).year
     return PROMPT.format(
         query=query,
@@ -110,6 +136,11 @@ def build_prompt(query: str, genres: list[str], today: datetime.date | None = No
         # "Recent" is a moving target; deriving it from today keeps the prompt honest
         # instead of hardcoding a year that quietly ages.
         recent_year=year - 5,
+        history_rules=(
+            HISTORY_RULES.format(history="\n".join(f"- {turn}" for turn in history))
+            if history
+            else ""
+        ),
     )
 
 
@@ -138,10 +169,15 @@ def understand(
     query: str,
     *,
     genres: list[str] | None = None,
+    history: list[str] | None = None,
     extract=_call_gemini,
     today: datetime.date | None = None,
 ) -> QueryIntent:
     """Parse `query` into a QueryIntent. Never raises -- falls back to the plain query.
+
+    `history` is the earlier requests in this conversation, oldest first. With it, a
+    follow-up ("but shorter") is resolved into a self-contained request before anything is
+    searched -- retrieval itself has no memory and never will.
 
     The fallback is the whole safety story: whatever goes wrong (API down, malformed
     JSON, a hallucinated genre), the caller still gets a usable intent that searches the
@@ -149,7 +185,7 @@ def understand(
     """
     try:
         intent = QueryIntent.model_validate_json(
-            extract(build_prompt(query, genres or [], today))
+            extract(build_prompt(query, genres or [], today, history))
         )
     except Exception:
         return QueryIntent(search_text=query)

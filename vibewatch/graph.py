@@ -78,6 +78,9 @@ class RecommendationState(TypedDict):
     # wonders why half the catalogue disappeared.
     search_text: NotRequired[str]
     inferred_filters: NotRequired[dict]
+    # Earlier requests in this conversation, oldest first -- the user's own words only.
+    # Passed IN by the caller rather than kept here between runs: see `recommend()`.
+    history: NotRequired[list[str]]
 
 
 def build_graph(
@@ -92,7 +95,9 @@ def build_graph(
     def understand_node(state: RecommendationState) -> dict:
         """Split the request into a mood and hard filters before anything is searched."""
         try:
-            intent = understand_fn(state["query"], genres=genres_fn())
+            intent = understand_fn(
+                state["query"], genres=genres_fn(), history=state.get("history") or None
+            )
         except Exception:
             # Understanding is a convenience layer. If it cannot run -- Qdrant down while
             # fetching the genre vocabulary, API failure -- the query still deserves an
@@ -169,11 +174,36 @@ def build_graph(
 _graph = build_graph()
 
 
-def recommend(query: str, *, limit: int = DEFAULT_LIMIT, **filters) -> RecommendationState:
+def recommend(
+    query: str,
+    *,
+    limit: int = DEFAULT_LIMIT,
+    history: list[str] | None = None,
+    **filters,
+) -> RecommendationState:
     """Run the full pipeline for one query and return the final state.
 
     The state -- not just the text -- is the return value on purpose: a UI needs the
     `hits` to show posters next to the `answer`, and an evaluation harness (step 6) needs
     both to judge whether the answer is faithful to its sources.
+
+    `history` carries the earlier requests of a conversation, so a follow-up ("but
+    shorter") can be resolved into a self-contained request.
+
+    WHY THE CALLER OWNS THE HISTORY, rather than a LangGraph checkpointer keeping it here.
+    A checkpointer is the framework-native answer, and it would mean this process holds
+    conversation state per thread id -- which turns the service behind it into a stateful
+    one: it needs sticky sessions, it cannot be scaled horizontally without a shared store
+    (Redis/Postgres checkpointer), and a restart drops every conversation. Passing the
+    history in keeps the API stateless, which is the right default for HTTP, and puts the
+    memory where it already exists anyway: the client's session. The cost is honest --
+    the client must send its history, and long conversations grow the request.
     """
-    return _graph.invoke({"query": query, "limit": limit, "filters": filters})
+    return _graph.invoke(
+        {
+            "query": query,
+            "limit": limit,
+            "filters": filters,
+            "history": history or [],
+        }
+    )

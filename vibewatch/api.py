@@ -44,6 +44,14 @@ class RecommendRequest(BaseModel):
 
     query: str = Field(min_length=1, description="what you are in the mood for")
     limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=20)
+    # The client sends its own conversation, which keeps this service STATELESS: no
+    # sticky sessions, no shared store, and a restart drops nothing. Capped because an
+    # unbounded history is an unbounded prompt -- and someone else's bill.
+    history: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description="earlier requests in this conversation, oldest first",
+    )
     media_type: str | None = Field(default=None, pattern="^(movie|tv)$")
     genres: list[str] | None = None
     release_year_min: int | None = Field(default=None, ge=1800, le=2100)
@@ -52,7 +60,7 @@ class RecommendRequest(BaseModel):
 
     def filters(self) -> dict:
         """Only the constraints the caller actually set."""
-        given = self.model_dump(exclude={"query", "limit"}, exclude_none=True)
+        given = self.model_dump(exclude={"query", "limit", "history"}, exclude_none=True)
         return {key: value for key, value in given.items() if value != []}
 
 
@@ -118,7 +126,12 @@ def genres() -> dict:
 def recommend_endpoint(request: RecommendRequest) -> RecommendResponse:
     """Run the full pipeline: understand -> retrieve -> generate."""
     try:
-        state = recommend(request.query, limit=request.limit, **request.filters())
+        state = recommend(
+            request.query,
+            limit=request.limit,
+            history=request.history,
+            **request.filters(),
+        )
     except Exception as error:
         # The dependencies this endpoint needs (Qdrant, Gemini) are external, so their
         # failure is a 503 -- "try again", not "your request was wrong".

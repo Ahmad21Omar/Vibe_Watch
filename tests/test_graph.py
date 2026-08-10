@@ -10,7 +10,7 @@ from vibewatch.graph import build_graph as _real_build_graph
 from vibewatch.query_understanding import QueryIntent
 
 
-def _passthrough_understand(query, genres=None):
+def _passthrough_understand(query, genres=None, history=None):
     """Understanding that extracts nothing -- the mood is the whole query."""
     return QueryIntent(search_text=query)
 
@@ -184,7 +184,9 @@ def test_retry_that_still_finds_nothing_stops_after_one_relax():
 
 def _understanding(search_text, **filters):
     """An extractor that always returns the given intent, ignoring the query."""
-    return lambda query, genres=None: QueryIntent(search_text=search_text, **filters)
+    return lambda query, genres=None, history=None: QueryIntent(
+        search_text=search_text, **filters
+    )
 
 
 def test_understood_filters_reach_retrieval():
@@ -258,7 +260,7 @@ def test_a_failing_understanding_step_does_not_take_the_query_down():
     # raise, it can break the whole app -- so a failure must degrade to plain search.
     log = []
 
-    def boom(query, genres=None):
+    def boom(query, genres=None, history=None):
         raise ConnectionError("Gemini down")
 
     state = build_graph(
@@ -281,3 +283,36 @@ def test_an_unreachable_genre_vocabulary_does_not_take_the_query_down():
     ).invoke({"query": "funny movies"})
 
     assert log[0]["query"] == "funny movies"
+
+
+def test_conversation_history_reaches_understanding():
+    # A follow-up like "but shorter" is meaningless without the earlier turns, and
+    # retrieval has no memory -- so the history has to arrive at the one step that can
+    # rewrite the request into something self-contained.
+    seen = {}
+
+    def spy_understand(query, genres=None, history=None):
+        seen["history"] = history
+        return QueryIntent(search_text=query)
+
+    build_graph(
+        retrieve_fn=_fake_retrieve([{"title": "x"}]), understand_fn=spy_understand
+    ).invoke({"query": "but shorter", "history": ["dark survival movies"]})
+
+    assert seen["history"] == ["dark survival movies"]
+
+
+def test_a_first_turn_passes_no_history():
+    # An empty list must arrive as None, so the prompt keeps no empty "earlier requests"
+    # block that could invite the model to invent context.
+    seen = {}
+
+    def spy_understand(query, genres=None, history=None):
+        seen["history"] = history
+        return QueryIntent(search_text=query)
+
+    build_graph(
+        retrieve_fn=_fake_retrieve([{"title": "x"}]), understand_fn=spy_understand
+    ).invoke({"query": "dark survival"})
+
+    assert seen["history"] is None

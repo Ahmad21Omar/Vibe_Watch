@@ -74,7 +74,8 @@ def test_only_the_query_is_required(client):
     client.post("/recommend", json={"query": "dark survival"})
 
     # No filters given must mean "search everything", not a stray constraint on every call.
-    assert client.calls == [{"query": "dark survival", "limit": 5}]
+    # `history` is always passed (empty for a first turn) -- the graph turns [] into None.
+    assert client.calls == [{"query": "dark survival", "limit": 5, "history": []}]
 
 
 def test_filters_reach_the_pipeline(client):
@@ -92,6 +93,7 @@ def test_filters_reach_the_pipeline(client):
     assert client.calls[-1] == {
         "query": "dark survival",
         "limit": 3,
+        "history": [],
         "media_type": "movie",
         "genres": ["Drama"],
         "release_year_min": 2000,
@@ -184,3 +186,37 @@ def test_health_reports_an_unreachable_index(client, monkeypatch):
     monkeypatch.setattr("vibewatch.api.get_client", boom)
 
     assert client.get("/health").status_code == 503
+
+
+# --- conversations ----------------------------------------------------------------------
+
+
+def test_history_is_forwarded_to_the_pipeline(client):
+    # The client owns the conversation, so it must arrive intact -- a dropped history
+    # turns "but shorter" into a search for the words "but shorter".
+    client.post(
+        "/recommend",
+        json={"query": "but shorter", "history": ["dark survival movies"]},
+    )
+
+    assert client.calls[-1]["history"] == ["dark survival movies"]
+
+
+def test_history_is_not_mistaken_for_a_filter(client):
+    # `filters()` builds the Qdrant kwargs from the request fields. If `history` leaked in
+    # there it would become a filter on a payload field that does not exist -- matching
+    # nothing, and looking like an empty catalogue.
+    client.post("/recommend", json={"query": "x", "history": ["a", "b"]})
+
+    call = client.calls[-1]
+    assert call["history"] == ["a", "b"]          # passed as its own argument...
+    assert set(call) == {"query", "limit", "history"}  # ...and not as a filter
+
+
+def test_an_unbounded_history_is_rejected(client):
+    # An unbounded history is an unbounded prompt, and someone else's bill.
+    response = client.post(
+        "/recommend", json={"query": "x", "history": [f"turn {i}" for i in range(50)]}
+    )
+
+    assert response.status_code == 422

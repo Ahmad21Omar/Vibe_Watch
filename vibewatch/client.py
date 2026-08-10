@@ -56,9 +56,19 @@ def _get(path: str) -> dict:
     return response.json()
 
 
-def recommend(query: str, *, limit: int = 5, **filters) -> dict:
-    """Ask the API for a recommendation. Same shape as the in-process pipeline returns."""
-    return _post("/recommend", {"query": query, "limit": limit, **filters})
+def recommend(
+    query: str, *, limit: int = 5, history: list[str] | None = None, **filters
+) -> dict:
+    """Ask the API for a recommendation. Same shape as the in-process pipeline returns.
+
+    `history` is this client's own conversation. Sending it -- rather than relying on the
+    server to remember -- is what keeps the service stateless and the client in control of
+    what it is asking about.
+    """
+    payload = {"query": query, "limit": limit, **filters}
+    if history:
+        payload["history"] = history
+    return _post("/recommend", payload)
 
 
 def genres() -> list[str]:
