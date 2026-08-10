@@ -79,7 +79,7 @@ retrieval against hand-labelled queries, generation by an LLM-as-judge.
 | Orchestration | LangGraph | Clear, traceable RAG flow modeled as a graph |
 | Generation | Gemini | Grounded recommendation in natural language |
 | Evaluation | hand-labelled gold set + LLM-as-judge | Measurable retrieval *and* generation quality |
-| Frontend | Streamlit | Fast UI to try things out |
+| Frontend | Streamlit | Chat UI that shows the sources next to every answer |
 | Deployment | Docker | Reproducible, runs anywhere |
 
 ---
@@ -94,7 +94,7 @@ retrieval against hand-labelled queries, generation by an LLM-as-judge.
 - [x] **Step 6 — Frontend & evaluation:** Streamlit UI, retrieval + faithfulness metrics,
       Docker deployment
 - [x] **Step 7 — Beyond the plan:** hybrid search (built, measured, *rejected* — see
-      below), query understanding, and a FastAPI service layer
+      below), query understanding with multi-turn follow-ups, and a FastAPI service layer
 
 ```bash
 docker compose up -d --build                              # UI :8501, API :8000
@@ -140,7 +140,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 docker compose up -d qdrant      # just the database -- dashboard at :6333/dashboard
-pytest                           # 150 tests, no keys and no services required
+pytest                           # 163 tests, no keys and no services required
 
 uvicorn vibewatch.api:app        # the service...
 streamlit run app.py             # ...and the UI that talks to it
@@ -199,8 +199,8 @@ Vibewatch/
 ## 🧪 Tests
 
 ```bash
-pytest                  # 150 fast, pure unit tests -- no API, no Docker, no quota
-pytest -m integration   # 9 end-to-end tests against live Qdrant + Gemini (opt-in)
+pytest                  # 163 fast, pure unit tests -- no API, no Docker, no quota
+pytest -m integration   # 11 end-to-end tests against live Qdrant + Gemini (opt-in)
 ruff check .            # lint (same command CI runs)
 ```
 
@@ -376,6 +376,32 @@ about a second of latency for requests the system otherwise could not answer at 
 was inferred is always shown in the UI: a filter that was applied but never mentioned is
 indistinguishable from a bug.
 
+### Follow-ups
+
+*"Something funnier"* means nothing on its own, and **retrieval has no memory** — so the
+same node resolves a follow-up against the earlier turns into a request that stands alone:
+
+| Turn | Understood as | Filters |
+|---|---|---|
+| *"korean series about revenge"* | `revenge` | `tv` · `ko` |
+| *"something funnier"* | `revenge` | `tv` · `ko` · **`Comedy`** |
+| *"space documentaries"* | `space` | `Documentary` — `ko`/`tv` **dropped** |
+
+Both directions matter, and the second is the harder one: constraints must **carry over**
+when the user did not revoke them, and must **not haunt** a genuinely new topic. Both are
+pinned as integration tests.
+
+**The conversation lives in the client, not on the server.** A LangGraph checkpointer is
+the framework-native answer and would keep it here — but that makes the service stateful:
+sticky sessions, no horizontal scaling without a shared store (Redis/Postgres), and a
+restart drops every conversation. Passing the history in with each request keeps the API
+**stateless**, which is the right default for HTTP, and puts the memory where it already
+exists: the client's session. The honest cost is that the client must send its history,
+and long conversations grow the request — so the API caps it.
+
+Only the user's own words are sent, never the generated answers: they are long, would
+dominate the prompt, and a follow-up refers to what was *asked*, not to what we replied.
+
 ---
 
 ## ✍️ Generation & orchestration
@@ -434,7 +460,7 @@ curl -X POST localhost:8000/recommend -H 'Content-Type: application/json' \
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /recommend` | the full pipeline: understand → retrieve → generate |
+| `POST /recommend` | the full pipeline: understand → retrieve → generate; takes an optional `history` for follow-ups |
 | `GET /health` | **readiness**, not liveness — 503 if the index is unreachable *or empty* |
 | `GET /genres` | the catalogue's real genres, so a client need not hardcode a list |
 
