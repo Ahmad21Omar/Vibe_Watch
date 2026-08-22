@@ -53,3 +53,40 @@ def test_require_covers_the_tmdb_key_too():
 
     assert "TMDB_API_KEY" in str(error.value)
     assert "themoviedb.org" in str(error.value)
+
+
+# --- managed Qdrant (Qdrant Cloud) --------------------------------------------------------
+
+
+def test_qdrant_needs_no_api_key_by_default():
+    # The local container has no auth. Requiring a key would break every local run and
+    # the entire test suite for the sake of a deployment target.
+    assert _blank_settings().qdrant_api_key == ""
+
+
+def test_a_configured_qdrant_key_is_passed_to_the_client(monkeypatch):
+    # Qdrant Cloud rejects unauthenticated requests, so the key has to reach the client --
+    # and an empty one must NOT be sent, since some local setups reject an empty
+    # Authorization header outright.
+    import vibewatch.vector_store as vector_store
+
+    seen = {}
+    monkeypatch.setattr(vector_store, "QdrantClient", lambda **kwargs: seen.update(kwargs))
+    monkeypatch.setattr(vector_store.settings, "qdrant_api_key", "cloud-key")
+    monkeypatch.setattr(vector_store.settings, "qdrant_url", "https://cluster:6333")
+
+    vector_store.get_client()
+
+    assert seen == {"url": "https://cluster:6333", "api_key": "cloud-key"}
+
+
+def test_no_key_means_no_auth_header(monkeypatch):
+    import vibewatch.vector_store as vector_store
+
+    seen = {}
+    monkeypatch.setattr(vector_store, "QdrantClient", lambda **kwargs: seen.update(kwargs))
+    monkeypatch.setattr(vector_store.settings, "qdrant_api_key", "")
+
+    vector_store.get_client()
+
+    assert seen["api_key"] is None

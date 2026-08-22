@@ -43,6 +43,10 @@ class Settings(BaseSettings):
 
     # Optional values with sensible defaults for local Docker.
     qdrant_url: str = "http://localhost:6333"
+    # Only managed Qdrant (Qdrant Cloud) requires this. Empty means "no auth", which is
+    # exactly right for the local container -- and wrong to demand, since the whole test
+    # suite and the local setup would then need a credential that does not exist.
+    qdrant_api_key: str = ""
     # Where the UI finds the API. Inside docker compose this is overridden to the service
     # name (http://api:8000), because "localhost" in a container is the container itself.
     api_url: str = "http://localhost:8000"

@@ -56,7 +56,16 @@ SCROLL_BATCH_SIZE = 256
 
 
 def get_client() -> QdrantClient:
-    return QdrantClient(url=settings.qdrant_url)
+    """Connect to Qdrant -- the local container, or a managed cluster if a key is set.
+
+    The api_key is passed only when configured. Handing `api_key=""` to a local instance
+    would make the client send an empty Authorization header, which some setups reject;
+    and requiring a key would break every local run and the whole test suite.
+    """
+    return QdrantClient(
+        url=settings.qdrant_url,
+        api_key=settings.qdrant_api_key or None,
+    )
 
 
 def point_id(title: Title) -> str:
