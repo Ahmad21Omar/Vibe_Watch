@@ -49,22 +49,28 @@ cloud by accident.
 
 1. https://huggingface.co/new-space → name `vibewatch`, SDK **Docker**, template **Blank**,
    visibility **Public**.
-2. Clone it and copy these files in:
+2. Clone it somewhere outside this project:
 
 ```bash
-git clone https://huggingface.co/spaces/<your-user>/vibewatch
-cd vibewatch
+git clone https://huggingface.co/spaces/<your-user>/vibewatch C:/Karriere/vibewatch-space
+```
 
-cp -r ../Vibewatch/vibewatch .
-cp ../Vibewatch/app.py ../Vibewatch/requirements.txt .
-cp ../Vibewatch/deploy/huggingface/Dockerfile .
-cp ../Vibewatch/deploy/huggingface/start.sh .
-cp ../Vibewatch/deploy/huggingface/README.md .        # carries the Space config header
+3. Fill it from here -- the script copies exactly the right files and refuses to finish if
+   a `.env`, `data/` or any other secret-bearing path ended up in the target:
 
+```bash
+python -m scripts.build_hf_space C:/Karriere/vibewatch-space
+```
+
+4. Push:
+
+```bash
+cd C:/Karriere/vibewatch-space
 git add -A && git commit -m "Deploy Vibewatch" && git push
 ```
 
-`README.md` matters: its YAML header is how a Space learns it is a Docker app on port 7860.
+The copied `README.md` matters: its YAML header is how a Space learns it is a Docker app
+on port 7860. Re-run the script and push again whenever you want to update the Space.
 
 ## 4. Set the secrets (~2 min)
 
