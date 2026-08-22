@@ -89,3 +89,46 @@ def test_no_hits_returns_honest_message_without_calling_the_model():
     assert (
         generate_recommendation("dark", [], generate=fail_if_called) == NO_RESULTS_MESSAGE
     )
+
+
+# --- honesty when constraints had to be dropped -------------------------------------------
+
+
+def test_no_note_when_nothing_was_dropped():
+    prompt = build_prompt("dark survival", [_hit("Fight Club")])
+
+    assert "IGNORED" not in prompt
+
+
+def test_the_prompt_names_the_dropped_constraints():
+    # The model must be told WHAT it is allowed to fail at. Otherwise it does what any
+    # helpful assistant does: justify the results it was handed.
+    prompt = build_prompt(
+        "a korean thriller, a bit older",
+        [_hit("Fight Club")],
+        {"genres": ["Thriller"], "release_year_max": 2015},
+    )
+
+    assert "IGNORED" in prompt
+    assert "genre" in prompt
+    assert "Thriller" in prompt
+    assert "2015" in prompt
+    # And it must be instructed to say so, not to paper over it.
+    assert "do not invent reasons" in prompt.lower()
+
+
+def test_dropped_filters_reach_the_prompt_through_generate():
+    seen = {}
+
+    def fake_generate(prompt: str) -> str:
+        seen["prompt"] = prompt
+        return "ok"
+
+    generate_recommendation(
+        "korean thriller",
+        [_hit("Fight Club")],
+        dropped_filters={"original_language": "ko"},
+        generate=fake_generate,
+    )
+
+    assert "original language = ko" in seen["prompt"]

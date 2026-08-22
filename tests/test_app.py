@@ -230,3 +230,23 @@ def test_starting_a_new_conversation_forgets_the_history(app):
     app.chat_input[0].set_value("space documentaries").run()
 
     assert app.calls[-1]["history"] == []
+
+
+def test_the_ui_names_the_constraint_that_was_given_up(app, monkeypatch):
+    # "Your filters were dropped" leaves the user guessing which part of their request
+    # survived. The search gives up as little as it can, so the UI should say what.
+    monkeypatch.setattr(
+        "vibewatch.client.recommend",
+        lambda query, *, limit=5, **filters: {
+            "hits": [_hit()],
+            "answer": "Watch The Road (2009).",
+            "relaxed": True,
+            "dropped_filters": {"genres": ["Thriller"]},
+        },
+    )
+
+    _search(app, "a korean thriller, a bit older")
+
+    warnings = " ".join(element.value for element in app.warning)
+    assert "genres" in warnings
+    assert "Thriller" in warnings

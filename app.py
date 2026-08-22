@@ -135,9 +135,20 @@ def render_turn(turn: dict) -> None:
                 icon="🧠",
             )
 
-        # Never silently ignore what the user asked for: if the filters matched nothing
-        # and the graph retried without them, say so.
-        if turn["state"].get("relaxed"):
+        # Never silently ignore what the user asked for. Naming the SPECIFIC constraint
+        # that was given up matters: "your filters were dropped" leaves the user guessing
+        # which part of their request survived, and the search only ever gives up as
+        # little as it can.
+        dropped = turn["state"].get("dropped_filters") or {}
+        if dropped:
+            st.warning(
+                "Nothing matched all of your request, so this search ignored: "
+                + " · ".join(
+                    f"**{key.replace('_', ' ')}** {value}" for key, value in dropped.items()
+                ),
+                icon="⚠️",
+            )
+        elif turn["state"].get("relaxed"):
             st.warning(
                 "No title matched your filters, so they were dropped for this search.",
                 icon="⚠️",

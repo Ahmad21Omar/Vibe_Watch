@@ -43,6 +43,24 @@ from vibewatch.vector_store import available_genres, get_client
 
 DEFAULT_LIMIT = 5
 
+# The order in which constraints are given up when nothing matched, least painful first.
+# Dropping everything at once is what this replaced, and it was badly wrong: a search for
+# "korean thrillers, a bit older" found nothing (the catalogue has no pre-2015 korean
+# thriller) and the all-or-nothing retry threw away "korean" too -- answering with turkish
+# soaps. Giving up the GENRE alone would have left 14 older korean titles.
+#
+# The ranking is a judgement about what a user means, not a technical detail:
+# - `genres` is the softest. It is a coarse label, and the vector search already finds
+#   thriller-ish material without the hard filter.
+# - the year range is an explicit wish, but "a bit older" tolerates approximation.
+# - language and media type are categorical. Nobody asking for korean television is
+#   served by a turkish soap, so these go last -- or not at all.
+RELAX_STAGES: list[tuple[str, ...]] = [
+    ("genres",),
+    ("release_year_min", "release_year_max"),
+    ("original_language", "media_type"),
+]
+
 
 @lru_cache(maxsize=1)
 def catalogue_genres() -> list[str]:
@@ -81,6 +99,12 @@ class RecommendationState(TypedDict):
     # Earlier requests in this conversation, oldest first -- the user's own words only.
     # Passed IN by the caller rather than kept here between runs: see `recommend()`.
     history: NotRequired[list[str]]
+    # How far the staged relaxation has progressed, and which constraints it gave up.
+    # `dropped_filters` is not bookkeeping: the UI shows it, and the generation step is
+    # told about it so the answer can admit what it ignored instead of inventing reasons
+    # why unrelated titles supposedly fit.
+    relax_stage: NotRequired[int]
+    dropped_filters: NotRequired[dict]
 
 
 def build_graph(
@@ -127,11 +151,41 @@ def build_graph(
         return {"hits": hits}
 
     def relax_filters_node(state: RecommendationState) -> dict:
-        """Drop the hard filters so the retry searches the whole catalogue."""
-        return {"filters": {}, "relaxed": True}
+        """Give up ONE group of constraints and let the search run again.
+
+        Staged rather than all-at-once, because the constraints are not equally
+        negotiable (see RELAX_STAGES). Stages that would drop nothing are skipped, so a
+        query carrying only a language filter reaches the end in one step instead of
+        looping through empty rounds.
+        """
+        filters = dict(state.get("filters") or {})
+        dropped = dict(state.get("dropped_filters") or {})
+        stage = state.get("relax_stage", 0)
+
+        while stage < len(RELAX_STAGES):
+            keys = RELAX_STAGES[stage]
+            stage += 1
+            if any(key in filters for key in keys):
+                for key in keys:
+                    if key in filters:
+                        dropped[key] = filters.pop(key)
+                break
+
+        return {
+            "filters": filters,
+            "dropped_filters": dropped,
+            "relax_stage": stage,
+            "relaxed": True,
+        }
 
     def generate_node(state: RecommendationState) -> dict:
-        answer = generate_fn(state["query"], state["hits"])
+        # Telling the model WHAT was dropped is what stops it inventing reasons why the
+        # results fit anyway ("slightly older than our newest releases" about a 2018 show,
+        # for a request that asked for older korean thrillers). An answer that quietly
+        # ignores the user's constraints is a subtler failure than an empty result.
+        answer = generate_fn(
+            state["query"], state["hits"], dropped_filters=state.get("dropped_filters")
+        )
         return {"answer": answer}
 
     def route_after_retrieve(state: RecommendationState) -> str:
@@ -145,7 +199,7 @@ def build_graph(
         """
         if state["hits"]:
             return "generate"
-        if state.get("filters") and not state.get("relaxed"):
+        if state.get("filters") and state.get("relax_stage", 0) < len(RELAX_STAGES):
             return "relax_filters"
         # Nothing found and nothing left to loosen -- generate() answers honestly.
         return "generate"

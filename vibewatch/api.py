@@ -92,6 +92,10 @@ class RecommendResponse(BaseModel):
     # A client that hides these leaves the user guessing why results look the way they do.
     inferred_filters: dict = Field(default_factory=dict)
     relaxed: bool = False
+    # Which constraints the search had to give up, if any. More useful than the bare
+    # `relaxed` flag: a client can tell the user exactly which part of their request
+    # could not be met instead of "some filters were dropped".
+    dropped_filters: dict = Field(default_factory=dict)
 
 
 @app.get("/health", summary="Is the service able to answer requests?")
@@ -143,4 +147,5 @@ def recommend_endpoint(request: RecommendRequest) -> RecommendResponse:
         hits=state["hits"],
         inferred_filters=state.get("inferred_filters") or {},
         relaxed=bool(state.get("relaxed")),
+        dropped_filters=state.get("dropped_filters") or {},
     )

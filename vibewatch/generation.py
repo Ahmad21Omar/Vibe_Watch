@@ -111,7 +111,36 @@ def _context_block(hit: dict) -> str:
     return Title.model_validate(hit).as_context_block()
 
 
-def build_prompt(query: str, hits: list[dict]) -> str:
+# Prepended when the search had to give up constraints to find anything at all. Without
+# it the model does what any helpful assistant does: it justifies the results it was
+# handed. A real run asked for older korean thrillers, got turkish soap operas after the
+# filters were dropped, and described a 2018 show as "slightly older than our newest
+# releases" -- fluent, confident, and answering a question nobody asked.
+RELAXED_NOTE = """IMPORTANT: nothing in the catalogue matched part of the request, so the \
+search IGNORED these constraints: {dropped}.
+
+The candidates below therefore do NOT satisfy them. Open your answer by saying plainly \
+which part could not be met, then recommend from what is there. Do not pretend the \
+candidates fit the ignored constraints, and do not invent reasons why they nearly do.
+
+"""
+
+
+def _describe(dropped: dict) -> str:
+    """Render dropped filters the way a person would say them, for the prompt."""
+    labels = {
+        "genres": "genre",
+        "release_year_min": "earliest year",
+        "release_year_max": "latest year",
+        "original_language": "original language",
+        "media_type": "type",
+    }
+    return ", ".join(
+        f"{labels.get(key, key)} = {value}" for key, value in sorted(dropped.items())
+    )
+
+
+def build_prompt(query: str, hits: list[dict], dropped_filters: dict | None = None) -> str:
     """Assemble the dynamic half of the prompt: the request plus the allowed titles.
 
     Numbering the candidates is not cosmetic -- it gives the model a way to refer to them
@@ -121,18 +150,31 @@ def build_prompt(query: str, hits: list[dict]) -> str:
         f"--- CANDIDATE {number} ---\n{_context_block(hit)}"
         for number, hit in enumerate(hits, start=1)
     )
+    note = RELAXED_NOTE.format(dropped=_describe(dropped_filters)) if dropped_filters else ""
     return (
+        f"{note}"
         f'The user is in the mood for: "{query}"\n\n'
         f"Candidate titles from our catalogue:\n\n{candidates}"
     )
 
 
-def generate_recommendation(query: str, hits: list[dict], *, generate=_call_gemini) -> str:
+def generate_recommendation(
+    query: str,
+    hits: list[dict],
+    *,
+    dropped_filters: dict | None = None,
+    generate=_call_gemini,
+) -> str:
     """Write the recommendation for `query`, grounded in `hits`.
+
+    `dropped_filters` names the constraints the search had to abandon to find anything.
+    Passing them in is what lets the answer be honest about what it could not do -- an
+    answer that quietly ignores a stated constraint is a subtler failure than an empty
+    result, because it looks like success.
 
     `generate` is injectable so tests can assert on the prompt we build without calling
     the API. Empty `hits` short-circuits: no context means no grounded answer is possible.
     """
     if not hits:
         return NO_RESULTS_MESSAGE
-    return generate(build_prompt(query, hits))
+    return generate(build_prompt(query, hits, dropped_filters))

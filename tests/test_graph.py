@@ -24,7 +24,7 @@ def build_graph(**kwargs):
     """
     kwargs.setdefault("understand_fn", _passthrough_understand)
     kwargs.setdefault("genres_fn", lambda: ["Drama", "Comedy"])
-    kwargs.setdefault("generate_fn", lambda query, hits: "ok")
+    kwargs.setdefault("generate_fn", lambda query, hits, **kw: "ok")
     return _real_build_graph(**kwargs)
 
 
@@ -41,7 +41,7 @@ def test_graph_passes_query_through_to_the_answer():
     hits = [{"score": 0.9, "title": "The Road"}]
     graph = build_graph(
         retrieve_fn=_fake_retrieve(hits),
-        generate_fn=lambda query, hits: f"{len(hits)} pick(s) for {query}",
+        generate_fn=lambda query, hits, **kw: f"{len(hits)} pick(s) for {query}",
     )
 
     state = graph.invoke({"query": "dark survival"})
@@ -57,7 +57,7 @@ def test_retrieved_hits_are_what_generation_receives():
     hits = [{"score": 0.9, "title": "The Road"}, {"score": 0.8, "title": "Alien"}]
     seen = {}
 
-    def spy_generate(query, hits):
+    def spy_generate(query, hits, **kw):
         seen["query"] = query
         seen["hits"] = hits
         return "ok"
@@ -78,7 +78,7 @@ def test_filters_and_limit_reach_retrieval():
     log = []
     graph = build_graph(
         retrieve_fn=_fake_retrieve([{"score": 0.9, "title": "Alien"}], log=log),
-        generate_fn=lambda query, hits: "ok",
+        generate_fn=lambda query, hits, **kw: "ok",
     )
 
     graph.invoke(
@@ -94,7 +94,7 @@ def test_defaults_apply_when_only_a_query_is_given():
     log = []
     graph = build_graph(
         retrieve_fn=_fake_retrieve([{"score": 0.9, "title": "Alien"}], log=log),
-        generate_fn=lambda query, hits: "ok",
+        generate_fn=lambda query, hits, **kw: "ok",
     )
 
     graph.invoke({"query": "dark"})
@@ -123,7 +123,7 @@ def test_empty_filtered_result_retries_without_filters():
     rescued = [{"score": 0.7, "title": "Alien"}]
     graph = build_graph(
         retrieve_fn=_retrieve_empty_then(rescued, log),
-        generate_fn=lambda query, hits: f"{len(hits)} pick(s)",
+        generate_fn=lambda query, hits, **kw: f"{len(hits)} pick(s)",
     )
 
     state = graph.invoke({"query": "dark", "filters": {"release_year_min": 2024}})
@@ -141,7 +141,7 @@ def test_hits_on_the_first_try_skip_the_retry():
     log = []
     graph = build_graph(
         retrieve_fn=_fake_retrieve([{"score": 0.9, "title": "Alien"}], log=log),
-        generate_fn=lambda query, hits: "ok",
+        generate_fn=lambda query, hits, **kw: "ok",
     )
 
     state = graph.invoke({"query": "dark", "filters": {"media_type": "movie"}})
@@ -156,7 +156,7 @@ def test_empty_result_without_filters_does_not_loop():
     log = []
     graph = build_graph(
         retrieve_fn=_fake_retrieve([], log=log),
-        generate_fn=lambda query, hits: "nothing found",
+        generate_fn=lambda query, hits, **kw: "nothing found",
     )
 
     state = graph.invoke({"query": "dark"})
@@ -169,7 +169,7 @@ def test_retry_that_still_finds_nothing_stops_after_one_relax():
     log = []
     graph = build_graph(
         retrieve_fn=_fake_retrieve([], log=log),
-        generate_fn=lambda query, hits: "nothing found",
+        generate_fn=lambda query, hits, **kw: "nothing found",
     )
 
     state = graph.invoke({"query": "dark", "filters": {"media_type": "tv"}})
@@ -242,7 +242,7 @@ def test_generation_still_answers_the_original_question():
     # "funny" alone would produce a reply that ignores the year and the media type.
     seen = {}
 
-    def spy_generate(query, hits):
+    def spy_generate(query, hits, **kw):
         seen["query"] = query
         return "ok"
 
@@ -316,3 +316,127 @@ def test_a_first_turn_passes_no_history():
     ).invoke({"query": "dark survival"})
 
     assert seen["history"] is None
+
+
+# --- staged relaxation ------------------------------------------------------------------
+# Regression tests for a real failure: "a korean thriller, a bit older" matched nothing
+# (the catalogue holds no pre-2015 korean thriller), the all-or-nothing retry dropped
+# "korean" as well, and the user was offered turkish soap operas.
+
+
+def _retrieve_empty_until(condition, log):
+    """Fake retrieval that keeps returning nothing until `condition(filters)` holds."""
+
+    def _retrieve(query, **kwargs):
+        filters = {k: v for k, v in kwargs.items() if k != "limit"}
+        log.append(filters)
+        return [{"title": "found", "media_type": "tv"}] if condition(filters) else []
+
+    return _retrieve
+
+
+def test_the_genre_is_given_up_before_the_language():
+    # THE bug. Dropping the genre alone leaves 14 older korean titles; dropping everything
+    # leaves the whole catalogue, which is how turkish soaps ended up as the answer.
+    log = []
+    graph = build_graph(retrieve_fn=_retrieve_empty_until(lambda f: "genres" not in f, log))
+
+    state = graph.invoke(
+        {
+            "query": "korean thriller, a bit older",
+            "filters": {
+                "genres": ["Thriller"],
+                "original_language": "ko",
+                "release_year_max": 2015,
+            },
+        }
+    )
+
+    # Second attempt: genre gone, language and year still enforced.
+    assert "genres" not in log[1]
+    assert log[1]["original_language"] == "ko"
+    assert log[1]["release_year_max"] == 2015
+    assert state["dropped_filters"] == {"genres": ["Thriller"]}
+
+
+def test_relaxation_continues_stage_by_stage_when_still_empty():
+    # Each round gives up one more group, in the order of least painful first.
+    log = []
+    graph = build_graph(
+        retrieve_fn=_retrieve_empty_until(lambda f: "original_language" not in f, log)
+    )
+
+    state = graph.invoke(
+        {
+            "query": "x",
+            "filters": {
+                "genres": ["Thriller"],
+                "release_year_max": 2015,
+                "original_language": "ko",
+            },
+        }
+    )
+
+    assert [sorted(attempt) for attempt in log] == [
+        ["genres", "original_language", "release_year_max"],  # as asked
+        ["original_language", "release_year_max"],            # genre given up
+        ["original_language"],                                # year given up
+        [],                                                   # language given up
+    ]
+    assert set(state["dropped_filters"]) == {
+        "genres",
+        "release_year_max",
+        "original_language",
+    }
+
+
+def test_stages_that_would_drop_nothing_are_skipped():
+    # A query carrying only a language filter must not loop through empty rounds for the
+    # genre and year stages it never had.
+    log = []
+    graph = build_graph(retrieve_fn=_retrieve_empty_until(lambda f: not f, log))
+
+    graph.invoke({"query": "x", "filters": {"original_language": "ko"}})
+
+    assert log == [{"original_language": "ko"}, {}]
+
+
+def test_relaxation_stops_instead_of_looping_forever():
+    log = []
+    graph = build_graph(retrieve_fn=_retrieve_empty_until(lambda f: False, log))
+
+    state = graph.invoke({"query": "x", "filters": {"genres": ["Thriller"]}})
+
+    assert len(log) == 2, "one filtered attempt, one relaxed, then stop"
+    assert state["answer"] == "ok"
+
+
+def test_generation_is_told_which_constraints_were_dropped():
+    # Without this the model justifies whatever it was handed -- describing a 2018 show as
+    # "slightly older" for a request that asked for older korean thrillers.
+    seen = {}
+
+    def spy_generate(query, hits, **kw):
+        seen.update(kw)
+        return "ok"
+
+    build_graph(
+        retrieve_fn=_retrieve_empty_until(lambda f: "genres" not in f, []),
+        generate_fn=spy_generate,
+    ).invoke({"query": "x", "filters": {"genres": ["Thriller"], "original_language": "ko"}})
+
+    assert seen["dropped_filters"] == {"genres": ["Thriller"]}
+
+
+def test_a_successful_search_reports_nothing_dropped():
+    seen = {}
+
+    def spy_generate(query, hits, **kw):
+        seen.update(kw)
+        return "ok"
+
+    build_graph(
+        retrieve_fn=_fake_retrieve([{"title": "x"}]), generate_fn=spy_generate
+    ).invoke({"query": "x", "filters": {"genres": ["Thriller"]}})
+
+    assert not seen.get("dropped_filters")
