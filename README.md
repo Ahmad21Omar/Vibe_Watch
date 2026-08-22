@@ -13,11 +13,15 @@ This is a classic **RAG flow** (Retrieval-Augmented Generation):
 first **retrieval** (fetch matching movies from the vector DB), then **generation**
 (the LLM reasons — but *only* based on the retrieved movies, so it doesn't hallucinate).
 
-![The Vibewatch UI: a mood query, the generated recommendation, and the retrieved titles it was based on](docs/screenshot.png)
+![The Vibewatch chat UI: the request "A Korean thriller with a plot twist", a banner showing the constraints understood from it (genre Thriller, original language ko), the generated recommendation, and the retrieved titles it was based on](docs/screenshot.png)
 
 The layout is the argument: the written recommendation sits **next to the titles it was
 generated from**. A recommender that only shows prose asks you to trust it; showing the
 retrieved evidence lets anyone check the answer against its sources.
+
+Note the banner above the answer. Nobody selected a genre or a language — both were read
+out of the sentence *"A Korean thriller with a plot twist"* and applied as real database
+filters, and the app says so rather than narrowing the catalogue silently.
 
 ---
 
