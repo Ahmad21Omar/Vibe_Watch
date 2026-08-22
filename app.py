@@ -20,10 +20,26 @@ cached explicitly. That is what `@st.cache_data` is for below -- without it, eve
 would spend Gemini quota again.
 """
 
+import os
+
 import streamlit as st
+
+# --- secrets bridge, before anything reads configuration --------------------------------
+# Streamlit Community Cloud hands secrets to the app through `st.secrets` (a TOML blob),
+# NOT as environment variables. Our settings are pydantic-settings, which reads the
+# environment -- and does so at IMPORT time. So the values have to be in os.environ before
+# the first `vibewatch` import, which is why this sits above them and they carry a noqa.
+# `setdefault`: a real environment variable (Docker, a local shell) still wins.
+try:
+    for _key, _value in st.secrets.items():
+        os.environ.setdefault(_key, str(_value))
+except Exception:
+    # No secrets.toml locally -- that is the normal case; .env covers it.
+    pass
 
 from vibewatch import client
 from vibewatch.client import ApiError
+from vibewatch.config import settings
 
 POSTER_BASE_URL = "https://image.tmdb.org/t/p/w200"
 
@@ -43,6 +59,23 @@ EXAMPLE_QUERIES = [
 ]
 
 st.set_page_config(page_title="Vibewatch", page_icon="🎬", layout="wide")
+
+
+@st.cache_resource(show_spinner="Starting the API...")
+def _ensure_api() -> str | None:
+    """On single-process hosts, bring the API up inside this process. Once per process.
+
+    `cache_resource` is what makes it once: Streamlit re-runs this script on every
+    interaction, and without the cache each click would try to bind port 8000 again.
+    """
+    if not settings.embedded_api:
+        return None
+    from vibewatch.embedded import serve_api_in_background
+
+    return serve_api_in_background()
+
+
+_ensure_api()
 
 
 @st.cache_data(show_spinner=False)

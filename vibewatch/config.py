@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     # Where the UI finds the API. Inside docker compose this is overridden to the service
     # name (http://api:8000), because "localhost" in a container is the container itself.
     api_url: str = "http://localhost:8000"
+    # Set on hosts that run ONE process and expose ONE port (Streamlit Community Cloud):
+    # the UI then starts the API on loopback inside itself and still talks HTTP to it.
+    # Opt-in on purpose -- see vibewatch/embedded.py for why this must never be automatic.
+    embedded_api: bool = False
 
     def require(self, name: str) -> str:
         """Return the setting `name`, or explain exactly what is missing and how to fix it."""
