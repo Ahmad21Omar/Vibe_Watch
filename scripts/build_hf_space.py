@@ -65,7 +65,8 @@ def main() -> None:
     if leaked:
         sys.exit(f"\nREFUSING TO FINISH: {leaked} present in {target}. Remove before pushing.")
 
-    print(f"\nReady. Now:\n  cd {target}\n  git add -A && git commit -m 'Deploy Vibewatch' && git push")
+    print(f"\nReady. Now:\n  cd {target}")
+    print("  git add -A && git commit -m 'Deploy Vibewatch' && git push")
     print("\nRemember the three SECRETS in the Space settings:")
     print("  GEMINI_API_KEY · QDRANT_URL · QDRANT_API_KEY")
 
