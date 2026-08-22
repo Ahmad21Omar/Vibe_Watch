@@ -144,7 +144,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 docker compose up -d qdrant      # just the database -- dashboard at :6333/dashboard
-pytest                           # 163 tests, no keys and no services required
+pytest                           # 173 tests, no keys and no services required
 
 uvicorn vibewatch.api:app        # the service...
 streamlit run app.py             # ...and the UI that talks to it
@@ -203,7 +203,7 @@ Vibewatch/
 ## 🧪 Tests
 
 ```bash
-pytest                  # 163 fast, pure unit tests -- no API, no Docker, no quota
+pytest                  # 173 fast, pure unit tests -- no API, no Docker, no quota
 pytest -m integration   # 11 end-to-end tests against live Qdrant + Gemini (opt-in)
 ruff check .            # lint (same command CI runs)
 ```
