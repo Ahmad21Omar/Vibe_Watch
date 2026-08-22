@@ -1,7 +1,11 @@
 # 🎬 Vibewatch
 
+[![live demo](https://img.shields.io/badge/live%20demo-vibewatch-ff4b4b.svg)](https://vibewatch-v1.streamlit.app/)
 [![tests](https://github.com/Ahmad21Omar/Vibe_Watch/actions/workflows/tests.yml/badge.svg)](https://github.com/Ahmad21Omar/Vibe_Watch/actions/workflows/tests.yml)
 [![python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
+
+**▶ Try it: https://vibewatch-v1.streamlit.app** — no signup, just describe a mood.
+(The app sleeps when nobody uses it, so the first load can take a moment.)
 
 **A semantic recommendation system for movies & TV shows.**
 Instead of searching by keywords, the user describes a *mood or theme* in natural
@@ -99,6 +103,8 @@ retrieval against hand-labelled queries, generation by an LLM-as-judge.
       Docker deployment
 - [x] **Step 7 — Beyond the plan:** hybrid search (built, measured, *rejected* — see
       below), query understanding with multi-turn follow-ups, and a FastAPI service layer
+
+Or run it yourself:
 
 ```bash
 docker compose up -d --build                              # UI :8501, API :8000
