@@ -284,3 +284,17 @@ def test_with_the_flag_set_the_advice_points_at_the_index_instead(app, monkeypat
 
     advice = " ".join(element.value for element in app.caption)
     assert "QDRANT_URL" in advice
+
+
+def test_diagnostics_never_print_a_secret_value(app, monkeypatch):
+    # This panel is as public as the app itself. It may name which settings are present;
+    # printing a value would publish a credential to every visitor.
+    monkeypatch.setenv("GEMINI_API_KEY", "super-secret-value")
+    monkeypatch.setenv("QDRANT_API_KEY", "another-secret")
+
+    app.run()
+
+    rendered = " ".join(element.value for element in app.caption)
+    assert "GEMINI_API_KEY" in rendered          # the NAME is useful...
+    assert "super-secret-value" not in rendered  # ...the value must never appear
+    assert "another-secret" not in rendered

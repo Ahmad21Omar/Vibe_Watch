@@ -61,6 +61,19 @@ EXAMPLE_QUERIES = [
 st.set_page_config(page_title="Vibewatch", page_icon="🎬", layout="wide")
 
 
+def _code_version() -> str:
+    """When this file was last written -- i.e. which deployment is actually running.
+
+    A hosted app gives you no way to ask "did my fix reach production?", and guessing from
+    the UI costs an hour. This answers it in one line.
+    """
+    import datetime
+    import pathlib
+
+    stamp = pathlib.Path(__file__).stat().st_mtime
+    return datetime.datetime.fromtimestamp(stamp, datetime.UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+
 @st.cache_resource(show_spinner="Starting the API...")
 def _ensure_api() -> str | None:
     """On single-process hosts, bring the API up inside this process. Once per process.
@@ -148,6 +161,25 @@ with st.sidebar:
         value=(EARLIEST_YEAR, LATEST_YEAR),
     )
     limit = st.slider("Titles to retrieve", min_value=3, max_value=10, value=5)
+
+    with st.expander("Diagnostics"):
+        # Every deployment failure so far has come down to one of these three lines, and
+        # from outside a hosted app there is no other way to see them. Names and booleans
+        # only -- never a value, because this panel is as public as the app.
+        st.caption(f"code loaded: {_code_version()}")
+        st.caption(f"embedded API: {settings.embedded_api}  ·  API at {settings.api_url}")
+        configured = [
+            name
+            for name in ("GEMINI_API_KEY", "QDRANT_URL", "QDRANT_API_KEY", "EMBEDDED_API")
+            if os.environ.get(name)
+        ]
+        st.caption("configuration found: " + (", ".join(configured) or "none"))
+        try:
+            client.genres()
+            st.caption("API: reachable ✓")
+        except ApiError as error:
+            st.caption(f"API: unreachable — {error}")
+
 
 def render_turn(turn: dict) -> None:
     """One exchange: what was asked, what was inferred, the answer and its sources."""
