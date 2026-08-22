@@ -84,7 +84,7 @@ retrieval against hand-labelled queries, generation by an LLM-as-judge.
 | Generation | Gemini | Grounded recommendation in natural language |
 | Evaluation | hand-labelled gold set + LLM-as-judge | Measurable retrieval *and* generation quality |
 | Frontend | Streamlit | Chat UI that shows the sources next to every answer |
-| Deployment | Docker | Reproducible, runs anywhere |
+| Deployment | Docker · Hugging Face Space | Reproducible locally, one public container in the cloud |
 
 ---
 
@@ -144,7 +144,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 docker compose up -d qdrant      # just the database -- dashboard at :6333/dashboard
-pytest                           # 173 tests, no keys and no services required
+pytest                           # 176 tests, no keys and no services required
 
 uvicorn vibewatch.api:app        # the service...
 streamlit run app.py             # ...and the UI that talks to it
@@ -189,6 +189,7 @@ Vibewatch/
 │   └── gold_queries.json  # hand-labelled queries for retrieval evaluation
 ├── tests/               # fast unit tests + opt-in live integration tests
 ├── data/                # locally cached TMDb data (git-ignored)
+├── deploy/huggingface/  # Space image + step-by-step deployment guide
 ├── docs/                # README assets (UI screenshot)
 ├── .github/workflows/   # CI: lint + tests on every push (no secrets needed)
 ├── .env.example         # template for API keys
@@ -203,7 +204,7 @@ Vibewatch/
 ## 🧪 Tests
 
 ```bash
-pytest                  # 173 fast, pure unit tests -- no API, no Docker, no quota
+pytest                  # 176 fast, pure unit tests -- no API, no Docker, no quota
 pytest -m integration   # 11 end-to-end tests against live Qdrant + Gemini (opt-in)
 ruff check .            # lint (same command CI runs)
 ```
