@@ -235,10 +235,24 @@ if query and query.strip():
             state = _recommend(query, limit, filters, tuple(history))
         except ApiError as error:
             st.error(f"Something went wrong: {error}")
-            st.caption(
-                "Is the API running (`docker compose up -d`, or "
-                "`uvicorn vibewatch.api:app`)? Check `/health` for the index status."
-            )
+            # Advice that fits where the app is actually deployed. Telling someone on a
+            # single-process host to run `docker compose up` is worse than saying nothing:
+            # it sends them looking for a shell that does not exist. The one configuration
+            # mistake that produces exactly this failure is naming it explicitly.
+            if not settings.embedded_api:
+                st.caption(
+                    "**`EMBEDDED_API` is not set.** On a host that runs a single process "
+                    "(Streamlit Community Cloud), add `EMBEDDED_API = \"true\"` to the "
+                    "app's secrets so the API starts inside this process. Running the API "
+                    "separately instead? Then `API_URL` must point at it — it is currently "
+                    f"`{settings.api_url}`."
+                )
+            else:
+                st.caption(
+                    "The API is embedded in this process, so this is most likely the index "
+                    "or the model: check `/health`, and that `QDRANT_URL` (with `:6333`), "
+                    "`QDRANT_API_KEY` and `GEMINI_API_KEY` are set."
+                )
             st.stop()
 
     st.session_state.turns.append({"query": query, "state": state})

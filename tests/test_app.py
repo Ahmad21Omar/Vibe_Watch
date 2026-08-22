@@ -250,3 +250,37 @@ def test_the_ui_names_the_constraint_that_was_given_up(app, monkeypatch):
     warnings = " ".join(element.value for element in app.warning)
     assert "genres" in warnings
     assert "Thriller" in warnings
+
+
+def test_a_missing_embedded_api_flag_is_named_explicitly(app, monkeypatch):
+    # The deployment failure this app will actually hit. The old advice was
+    # "run docker compose up", which on a single-process host sends the reader looking
+    # for a shell that does not exist.
+    from vibewatch.client import ApiError
+
+    def boom(query, *, limit=5, **filters):
+        raise ApiError("Cannot reach the API at http://localhost:8000: timed out")
+
+    monkeypatch.setattr("vibewatch.client.recommend", boom)
+    monkeypatch.setattr("vibewatch.config.settings.embedded_api", False)
+
+    _search(app)
+
+    advice = " ".join(element.value for element in app.caption)
+    assert "EMBEDDED_API" in advice
+    assert "docker compose" not in advice
+
+
+def test_with_the_flag_set_the_advice_points_at_the_index_instead(app, monkeypatch):
+    from vibewatch.client import ApiError
+
+    def boom(query, *, limit=5, **filters):
+        raise ApiError("boom")
+
+    monkeypatch.setattr("vibewatch.client.recommend", boom)
+    monkeypatch.setattr("vibewatch.config.settings.embedded_api", True)
+
+    _search(app)
+
+    advice = " ".join(element.value for element in app.caption)
+    assert "QDRANT_URL" in advice
